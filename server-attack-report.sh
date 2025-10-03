@@ -7,34 +7,30 @@ if ! command -v journalctl &> /dev/null; then
     exit 1
 fi
 
-# parse argument (Nh, Nd, Nw, Nm)
-if [ -n "$1" ]; then
+# === Parse time argument ===
+if [ -n "${1-}" ]; then
     ARG=$1
     UNIT=${ARG: -1}
     NUM=${ARG%?}
     case $UNIT in
-        h) SECONDS=$((NUM*3600));;
-        d) SECONDS=$((NUM*86400));;
-        w) SECONDS=$((NUM*604800));;
-        m) SECONDS=$((NUM*2592000));;
-        *) echo "❌ Usage format: Nh Nd Nw Nm e.g. 12h, 3d, 2w"; exit 1;;
+        m) RANGE="$NUM minutes ago";;
+        h) RANGE="$NUM hours ago";;
+        d) RANGE="$NUM days ago";;
+        w) RANGE="$NUM weeks ago";;
+        M) RANGE="$NUM months ago";;
+        *) echo "❌ Usage: $0 Nm|Nh|Nd|Nw|NM  (eg: 45m 12h, 3d, 2w, 1M)"; exit 1;;
     esac
-    SINCE=$(date -u --date="-$SECONDS seconds" +"%Y-%m-%dT%H:%M:%S")
-    echo "🔹 Analyzing logs for the last $ARG (since $SINCE)"
+    SINCE=$(date -u --date="$RANGE" +"%Y-%m-%dT%H:%M:%S")
+    echo "🔹 Authentication summary for last $ARG (since $SINCE)"
 else
-    SINCE=""
-    echo "🔹 Analyzing ALL logs"
+    echo "Must provide time range argument (e.g. 45m, 12h, 3d, 2w, 1M)"
+    exit 1
 fi
 echo "---------------------------------------"
 
 # Use journalctl to access SSH logs with time filtering
-if [ -n "$SINCE" ]; then
-    # Filter by time using journalctl's built-in time filtering
-    FILTERED=$(journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso)
-else
-    # No time limit - get all SSH logs
-    FILTERED=$(journalctl --no-pager _COMM=sshd --output=short-iso)
-fi
+# Filter by time using journalctl's built-in time filtering
+FILTERED=$(journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso)
 
 # Report
 FAILS=$(echo "$FILTERED" | grep "Failed password" | wc -l)
