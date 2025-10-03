@@ -27,9 +27,12 @@ echo "---------------------------------------"
 
 # === Collect & filter logs once ===
 TMPFILE=$(mktemp)
+TMPFILE_FULL=$(mktemp)
 # Use journalctl to access authentication logs with time filtering
-# Filter by time using journalctl's built-in time filtering
-journalctl --no-pager _COMM=sshd --since="$SINCE" --output=json | jq -r '.MESSAGE' 2>/dev/null | grep -E "(Accepted|Failed|Invalid|authentication|banner|preauth)" > "$TMPFILE" || true
+# Get logs with timestamps in short-iso format for better readability
+journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso | grep -E "(Accepted|Failed|Invalid|authentication|banner|preauth)" > "$TMPFILE_FULL" || true
+# Extract just messages for counting (preserve original functionality)
+cat "$TMPFILE_FULL" | awk '{$1=""; $2=""; $3=""; print substr($0,4)}' > "$TMPFILE" || true
 
 # === Counters ===
 PASS_ACCEPT=$(grep -c "Accepted password" "$TMPFILE" || true)
@@ -62,30 +65,30 @@ echo ""
 echo "--------------------------------"
 echo ""
 echo "All Accepted Publickey logs:"
-grep "Accepted publickey" "$TMPFILE" || true
-echo ""
-echo "--------------------------------"
-echo ""
-echo "All Accepted Password logs:"
-grep "Accepted password" "$TMPFILE" || true
+grep "Accepted publickey" "$TMPFILE_FULL" || true
 echo ""
 echo "--------------------------------" 
 echo ""
+echo "All Accepted Password logs:"
+grep "Accepted password" "$TMPFILE_FULL" || true
+echo ""
+echo "--------------------------------"
+echo ""
 echo "All Failed Publickey logs:"
-grep "Failed publickey" "$TMPFILE" || true
+grep "Failed publickey" "$TMPFILE_FULL" || true
 echo ""
 echo "--------------------------------"
 echo ""
 echo "All Failed Password logs:"
-grep "Failed password" "$TMPFILE" || true
+grep "Failed password" "$TMPFILE_FULL" || true
 echo ""
 echo "--------------------------------"
 echo ""
 echo "All Invalid User logs:"
-grep "Invalid user" "$TMPFILE" || true
+grep "Invalid user" "$TMPFILE_FULL" || true
 echo ""
 echo "--------------------------------"
 echo ""
-rm -f "$TMPFILE"
+rm -f "$TMPFILE" "$TMPFILE_FULL"
 echo "Reporting completed."
 
