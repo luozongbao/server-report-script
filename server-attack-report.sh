@@ -1,11 +1,9 @@
 #!/bin/bash
-# SSH attack report for ISO8601 logs (/var/log/auth.log on systemd machines)
+# SSH attack report using journalctl for systemd systems
 
-LOGDIR="/var/log"
-LOGFILES=$(ls -1 ${LOGDIR}/auth.log* 2>/dev/null)
-
-if [ -z "$LOGFILES" ]; then
-    echo "❌ ไม่พบไฟล์ log ที่ ${LOGDIR}/auth.log*"
+# Check if journalctl is available
+if ! command -v journalctl &> /dev/null; then
+    echo "❌ journalctl command not found. This script requires systemd systems."
     exit 1
 fi
 
@@ -19,55 +17,46 @@ if [ -n "$1" ]; then
         d) SECONDS=$((NUM*86400));;
         w) SECONDS=$((NUM*604800));;
         m) SECONDS=$((NUM*2592000));;
-        *) echo "❌ ใช้รูปแบบ Nh Nd Nw Nm เช่น 12h, 3d, 2w"; exit 1;;
+        *) echo "❌ Usage format: Nh Nd Nw Nm e.g. 12h, 3d, 2w"; exit 1;;
     esac
     SINCE=$(date -u --date="-$SECONDS seconds" +"%Y-%m-%dT%H:%M:%S")
-    echo "🔹 กำลังวิเคราะห์ log ย้อนหลัง $ARG (ตั้งแต่ $SINCE)"
+    echo "🔹 Analyzing logs for the last $ARG (since $SINCE)"
 else
-    SINCE="1970-01-01T00:00:00"
-    echo "🔹 กำลังวิเคราะห์ log ทั้งหมด"
+    SINCE=""
+    echo "🔹 Analyzing ALL logs"
 fi
 echo "---------------------------------------"
 
-TMPFILE=$(mktemp)
-for f in $LOGFILES; do
-    if [[ "$f" == *.gz ]]; then
-        zcat "$f" >> $TMPFILE
-    else
-        cat "$f" >> $TMPFILE
-    fi
-done
-
-FILTERED=$(awk -v since="$SINCE" '
-{
-    ts=$1
-    gsub("\\..*","",ts)         # ตัด sub-second
-    gsub("\\+.*","",ts)         # ตัด timezone
-    if (ts >= since) print $0
-}' $TMPFILE)
-rm -f $TMPFILE
+# Use journalctl to access SSH logs with time filtering
+if [ -n "$SINCE" ]; then
+    # Filter by time using journalctl's built-in time filtering
+    FILTERED=$(journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso)
+else
+    # No time limit - get all SSH logs
+    FILTERED=$(journalctl --no-pager _COMM=sshd --output=short-iso)
+fi
 
 # Report
 FAILS=$(echo "$FILTERED" | grep "Failed password" | wc -l)
 INVALID=$(echo "$FILTERED" | grep "Invalid user" | wc -l)
 BANNER=$(echo "$FILTERED" | grep "banner exchange" | wc -l)
 
-echo "1) จำนวน ssh login ล้มเหลว (Failed password): $FAILS"
-echo "2) จำนวน Invalid user attempts: $INVALID"
-echo "3) จำนวน Banner exchange (noise scans): $BANNER"
+echo "1) Number of SSH login failures (Failed password): $FAILS"
+echo "2) Number of Invalid user attempts: $INVALID"
+echo "3) Number of Banner exchange (noise scans): $BANNER"
 
 echo
-echo "4) Top 10 IP (ทุกประเภท):"
+echo "4) Top 10 IP addresses (all types):"
 echo "$FILTERED" | egrep "Failed password|Invalid user|banner exchange" | \
     awk '{for(i=1;i<=NF;i++){ if ($i=="from"){print $(i+1)}}}' | \
     sort | uniq -c | sort -nr | head -10
 
 echo
-echo "5) Top 10 Username (จาก Failed/Invalid):"
+echo "5) Top 10 Usernames (from Failed/Invalid):"
 echo "$FILTERED" | egrep "Failed password|Invalid user" | \
     awk '{for(i=1;i<=NF;i++){ if ($i=="user"||$i=="for"){print $(i+1)}}}' | \
     sort | uniq -c | sort -nr | head -10
 
 echo
-echo "6) ตัวอย่าง log ล่าสุด:"
+echo "6) Recent log examples:"
 echo "$FILTERED" | egrep "Failed password|Invalid user|banner exchange" | tail -10
