@@ -1,94 +1,71 @@
 #!/bin/bash
-# SSH Authentication Summary with Time Filter (Nh, Nd, Nw, Nm)
+# Detailed SSH authentication summary over a time window.
+# Usage: ./auth-summary.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
 
-set -euo pipefail
-# Use journalctl for log access instead of direct file access
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 
-# === Parse time argument ===
-if [ -n "${1-}" ]; then
-    ARG=$1
-    UNIT=${ARG: -1}
-    NUM=${ARG%?}
-    case $UNIT in
-        m) RANGE="$NUM minutes ago";;
-        h) RANGE="$NUM hours ago";;
-        d) RANGE="$NUM days ago";;
-        w) RANGE="$NUM weeks ago";;
-        M) RANGE="$NUM months ago";;
-        *) echo "❌ Usage: $0 Nm|Nh|Nd|Nw|NM  (eg: 45m 12h, 3d, 2w, 1M)"; exit 1;;
-    esac
-    SINCE=$(date -u --date="$RANGE" +"%Y-%m-%dT%H:%M:%S")
-    echo "🔹 Authentication summary for last $ARG (since $SINCE)"
-else
-    echo "Must provide time range argument (e.g. 45m, 12h, 3d, 2w, 1M)"
-    exit 1
+require_journalctl
+require_privileges
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    sed -n '2,4p' "$0"
+    exit 0
 fi
-echo "---------------------------------------"
 
-# === Collect & filter logs once ===
-TMPFILE=$(mktemp)
-TMPFILE_FULL=$(mktemp)
-# Use journalctl to access authentication logs with time filtering
-# Get logs with timestamps in short-iso format for better readability
-journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso | grep -E "(Accepted|Failed|Invalid|authentication|banner|preauth)" > "$TMPFILE_FULL" || true
-# Extract just messages for counting (preserve original functionality)
-cat "$TMPFILE_FULL" | awk '{$1=""; $2=""; $3=""; print substr($0,4)}' > "$TMPFILE" || true
+SINCE="$(parse_time_arg "${1-}")"
+TMPFILE_FULL="$(mktemp)"
+trap 'rm -f "$TMPFILE_FULL"' EXIT
 
-# === Counters ===
-PASS_ACCEPT=$(grep -c "Accepted password" "$TMPFILE" || true)
-PASS_FAIL=$(grep -c "Failed password" "$TMPFILE" || true)
-KEY_ACCEPT=$(grep -c "Accepted publickey" "$TMPFILE" || true)
-KEY_FAIL=$(grep -c "Failed publickey" "$TMPFILE" || true)
-INVALID=$(grep -c "Invalid user" "$TMPFILE" || true)
-PAMFAIL=$(grep -ci "authentication failure" "$TMPFILE" || true)
-BANNER=$(grep -c "banner exchange" "$TMPFILE" || true)
-PREAUTH=$(grep -c "preauth" "$TMPFILE" || true)
+journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso \
+    > "$TMPFILE_FULL"
 
-# === Totals ===
-TOTAL=$((PASS_ACCEPT + PASS_FAIL + KEY_ACCEPT + KEY_FAIL + INVALID + PAMFAIL + BANNER + PREAUTH))
+banner_script "Authentication summary for last $1 (since $SINCE)"
+
+# ---- Counters --------------------------------------------------------------
+PASS_ACCEPT=$(grep -c "Accepted password"   "$TMPFILE_FULL" || true)
+PASS_FAIL=$(  grep -c "Failed password"     "$TMPFILE_FULL" || true)
+KEY_ACCEPT=$( grep -c "Accepted publickey"  "$TMPFILE_FULL" || true)
+KEY_FAIL=$(   grep -c "Failed publickey"    "$TMPFILE_FULL" || true)
+INVALID=$(    grep -c "Invalid user"        "$TMPFILE_FULL" || true)
+PAMFAIL=$(    grep -ci "authentication failure" "$TMPFILE_FULL" || true)
+BANNER=$(     grep -c "banner exchange"     "$TMPFILE_FULL" || true)
+PREAUTH=$(    grep -c " preauth"            "$TMPFILE_FULL" || true)
+
 SUCCESS=$((PASS_ACCEPT + KEY_ACCEPT))
-FAIL=$((PASS_FAIL + KEY_FAIL + INVALID + PAMFAIL))
-NOISE=$((BANNER + PREAUTH))
+FAIL=$((    PASS_FAIL   + KEY_FAIL   + INVALID + PAMFAIL))
+NOISE=$((   BANNER      + PREAUTH))
+TOTAL=$((   SUCCESS     + FAIL       + NOISE))
 
-# === Report ===
-echo "Password: accepted=$PASS_ACCEPT failed=$PASS_FAIL"
-echo "PubKey  : accepted=$KEY_ACCEPT failed=$KEY_FAIL"
-echo "Invalid : $INVALID"
-echo "PAMfail : $PAMFAIL"
-echo "Noise   : banner=$BANNER preauth=$PREAUTH"
-echo
-echo "✅ Success = $SUCCESS"
-echo "❌ Failed  = $FAIL"
-echo "⚠️ Noise   = $NOISE"
-echo "Total=$TOTAL"
-echo ""
-echo "--------------------------------"
-echo ""
-echo "All Accepted Publickey logs:"
-grep "Accepted publickey" "$TMPFILE_FULL" || true
-echo ""
-echo "--------------------------------" 
-echo ""
-echo "All Accepted Password logs:"
-grep "Accepted password" "$TMPFILE_FULL" || true
-echo ""
-echo "--------------------------------"
-echo ""
-echo "All Failed Publickey logs:"
-grep "Failed publickey" "$TMPFILE_FULL" || true
-echo ""
-echo "--------------------------------"
-echo ""
-echo "All Failed Password logs:"
-grep "Failed password" "$TMPFILE_FULL" || true
-echo ""
-echo "--------------------------------"
-echo ""
-echo "All Invalid User logs:"
-grep "Invalid user" "$TMPFILE_FULL" || true
-echo ""
-echo "--------------------------------"
-echo ""
-rm -f "$TMPFILE" "$TMPFILE_FULL"
-echo "Reporting completed."
+printf "Password : accepted=%-6d  failed=%-6d\n" "$PASS_ACCEPT" "$PASS_FAIL"
+printf "PubKey   : accepted=%-6d  failed=%-6d\n" "$KEY_ACCEPT"  "$KEY_FAIL"
+printf "Invalid  : %d\n"  "$INVALID"
+printf "PAMfail  : %d\n"  "$PAMFAIL"
+printf "Noise    : banner=%-4d  preauth=%-4d\n\n" "$BANNER" "$PREAUTH"
 
+printf "${C_GREEN}✅ Success = %d${C_RESET}\n" "$SUCCESS"
+printf "${C_RED}❌ Failed  = %d${C_RESET}\n" "$FAIL"
+printf "${C_YELLOW}⚠️  Noise   = %d${C_RESET}\n" "$NOISE"
+printf "Total = %d\n" "$TOTAL"
+
+# ---- Per-category log listings --------------------------------------------
+emit_logs() {
+    local title="$1"; shift
+    local pattern="$1"
+    section "$title"
+    if [ "$pattern" = "preauth_noise" ]; then
+        grep -E "banner exchange| preauth" "$TMPFILE_FULL" || true
+    else
+        grep "$pattern" "$TMPFILE_FULL" || true
+    fi
+}
+
+emit_logs "All Accepted Publickey logs" "Accepted publickey"
+emit_logs "All Accepted Password logs" "Accepted password"
+emit_logs "All Failed Publickey logs"   "Failed publickey"
+emit_logs "All Failed Password logs"   "Failed password"
+emit_logs "All Invalid User logs"      "Invalid user"
+emit_logs "All Noise / Preauth logs"   "preauth_noise"
+
+printf "\n${C_BOLD}Reporting completed.${C_RESET}\n"

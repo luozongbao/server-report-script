@@ -1,58 +1,56 @@
 #!/bin/bash
-# SSH attack report using journalctl for systemd systems
+# SSH attack-focused summary over a time window.
+# Usage: ./server-attack-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
 
-# Check if journalctl is available
-if ! command -v journalctl &> /dev/null; then
-    echo "❌ journalctl command not found. This script requires systemd systems."
-    exit 1
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+require_journalctl
+require_privileges
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    sed -n '2,4p' "$0"
+    exit 0
 fi
 
-# === Parse time argument ===
-if [ -n "${1-}" ]; then
-    ARG=$1
-    UNIT=${ARG: -1}
-    NUM=${ARG%?}
-    case $UNIT in
-        m) RANGE="$NUM minutes ago";;
-        h) RANGE="$NUM hours ago";;
-        d) RANGE="$NUM days ago";;
-        w) RANGE="$NUM weeks ago";;
-        M) RANGE="$NUM months ago";;
-        *) echo "❌ Usage: $0 Nm|Nh|Nd|Nw|NM  (eg: 45m 12h, 3d, 2w, 1M)"; exit 1;;
-    esac
-    SINCE=$(date -u --date="$RANGE" +"%Y-%m-%dT%H:%M:%S")
-    echo "🔹 Authentication summary for last $ARG (since $SINCE)"
-else
-    echo "Must provide time range argument (e.g. 45m, 12h, 3d, 2w, 1M)"
-    exit 1
-fi
-echo "---------------------------------------"
+SINCE="$(parse_time_arg "${1-}")"
+TMPFILE_FULL="$(mktemp)"
+TMPFILE_ATTACKS="$(mktemp)"
+trap 'rm -f "$TMPFILE_FULL" "$TMPFILE_ATTACKS"' EXIT
 
-# Use journalctl to access SSH logs with time filtering
-# Filter by time using journalctl's built-in time filtering
-FILTERED=$(journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso)
+journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso \
+    > "$TMPFILE_FULL"
 
-# Report
-FAILS=$(echo "$FILTERED" | grep "Failed password" | wc -l)
-INVALID=$(echo "$FILTERED" | grep "Invalid user" | wc -l)
-BANNER=$(echo "$FILTERED" | grep "banner exchange" | wc -l)
+# Subset of sshd events we treat as "attacks"
+grep -E "Failed password|Invalid user|banner exchange" "$TMPFILE_FULL" \
+    > "$TMPFILE_ATTACKS" || true
 
-echo "1) Number of SSH login failures (Failed password): $FAILS"
-echo "2) Number of Invalid user attempts: $INVALID"
-echo "3) Number of Banner exchange (noise scans): $BANNER"
+banner_script "Analyzing logs for the last $1 (since $SINCE)"
 
-echo
-echo "4) Top 10 IP addresses (all types):"
-echo "$FILTERED" | egrep "Failed password|Invalid user|banner exchange" | \
-    awk '{for(i=1;i<=NF;i++){ if ($i=="from"){print $(i+1)}}}' | \
-    sort | uniq -c | sort -nr | head -10
+FAILS=$(  grep -c "Failed password"  "$TMPFILE_ATTACKS" || true)
+INVALID=$(grep -c "Invalid user"      "$TMPFILE_ATTACKS" || true)
+BANNER=$( grep -c "banner exchange"   "$TMPFILE_ATTACKS" || true)
+TOTAL=$((FAILS + INVALID + BANNER))
 
-echo
-echo "5) Top 10 Usernames (from Failed/Invalid):"
-echo "$FILTERED" | egrep "Failed password|Invalid user" | \
-    awk '{for(i=1;i<=NF;i++){ if ($i=="user"||$i=="for"){print $(i+1)}}}' | \
-    sort | uniq -c | sort -nr | head -10
+printf "1) Failed password        : %d\n"  "$FAILS"
+printf "2) Invalid user attempts  : %d\n"  "$INVALID"
+printf "3) Banner exchange (scan) : %d\n"  "$BANNER"
+printf "${C_BOLD}   Total attack events   : %d${C_RESET}\n\n" "$TOTAL"
 
-echo
-echo "6) Recent log examples:"
-echo "$FILTERED" | egrep "Failed password|Invalid user|banner exchange" | tail -10
+# ---- Top IPs --------------------------------------------------------------
+section "4) Top 10 attacker IP addresses"
+grep -oE 'from ([0-9]{1,3}\.){3}[0-9]{1,3}' "$TMPFILE_ATTACKS" \
+    | awk '{print $2}' | top_n 10
+
+# ---- Top usernames ---------------------------------------------------------
+section "5) Top 10 targeted usernames"
+# Match "for <user> from ..." (password) and "Invalid user <user> from ..." (invalid).
+grep -oE '(Failed password for|Invalid user) [^ ]+' "$TMPFILE_ATTACKS" \
+    | awk '{print $NF}' | top_n 10
+
+# ---- Recent events ---------------------------------------------------------
+section "6) Recent attack log entries (last 10)"
+tail -10 "$TMPFILE_ATTACKS" || true
+
+printf "\n${C_BOLD}Reporting completed.${C_RESET}\n"
