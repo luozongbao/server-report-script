@@ -1,181 +1,420 @@
-# 🔐 SSH Authentication Analysis Scripts
+# 🛡️ Server Report Scripts
 
-This repository contains two scripts for analyzing SSH authentication logs using **journalctl** on systemd-based systems:
+A small collection of Bash scripts for **analyzing SSH and memory pressure** on systemd-based Linux servers. All scripts use `journalctl` for log retrieval, share the same time-range argument convention, and auto-disable color output when piped.
 
-1. **`auth-summary.sh`** - Detailed authentication summary with full log display including timestamps
-2. **`server-attack-report.sh`** - Attack-focused report with top IP addresses and usernames
+## 📦 Scripts
 
-Both scripts analyze SSH authentication events and report:
-
-- Number of failed SSH logins (Failed password)  
-- Number of invalid user attempts (Invalid user)  
-- Number of banner exchange errors (bots / port scans with invalid handshake)  
-- Top 10 attacker IP addresses  
-- Top 10 attacker usernames  
-- Latest attack log entries  
+| Script | Purpose |
+|--------|---------|
+| [`auth-report.sh`](auth-report.sh) | Detailed SSH authentication breakdown by category, with full per-category log listings |
+| [`attack-report.sh`](attack-report.sh) | Attack-focused SSH summary: top IPs, top usernames, recent events |
+| [`memory-report.sh`](memory-report.sh) | Memory pressure: OOM kills, low-memory warnings, swap activity, current snapshot |
+| [`lib/common.sh`](lib/common.sh) | Shared library — time parser, journalctl helpers, email sending |
+| [`.env.example`](.env.example) | Template for recipient / sender / msmtp config |
 
 ## 🚀 Features
 
-### Modern systemd Integration
-- **Uses journalctl** instead of reading log files directly
-- Automatic handling of log rotation and compression
-- Built-in time filtering for better performance
-- Works on all systemd-based Linux distributions
-
-### Time Filtering Support
-- **Minutes**: `45m` → last 45 minutes
-- **Hours**: `12h` → last 12 hours  
-- **Days**: `3d` → last 3 days  
-- **Weeks**: `2w` → last 2 weeks  
-- **Months**: `1M` → last 1 month  
-
-### Enhanced Output
-- **Full timestamps** in all log displays (ISO format)
-- **English interface** (no Thai text)
-- **Detailed breakdowns** by authentication type
-- **Real log entries** with complete context  
+- **Shared library** (`lib/common.sh`) — time parser, journalctl wrapper, helpers reused across scripts
+- **Time-range argument required** — `Nm` `Nh` `Nd` `Nw` `NM` (minutes, hours, days, weeks, months)
+- **Optional emailing** — `-e` / `--email` flag, `REPORT_EMAIL` env var, or `.env` file (auto-loaded); ANSI stripped from body
+- **Auto-loads `.env`** — no `source .env` boilerplate; honors `$REPORT_ENV_FILE`, `$PWD/.env`, `$HOME/.config/...`, `/etc/...`
+- **Install-friendly** — scripts find `lib/common.sh` via `$LIB_DIR`, relative to the script, or in `/usr/local/share/...`
+- **Auto color output** — disabled when piped or redirected
+- **Privilege & dependency checks** — fails fast with clear messages
+- **Robust IP/username extraction** — regex-based, not positional word matching
+- **Trap-based cleanup** — temporary files removed on exit
 
 ## 📋 Usage
 
-### Prerequisites
-- Linux system with **systemd** (journalctl command)
-- **Root or sudo access** (required for journalctl to access SSH logs)
-
-### auth-summary.sh (Detailed Authentication Analysis)
 ```bash
-# Make executable
-chmod +x auth-summary.sh
+chmod +x *.sh lib/*.sh
 
-# Time range is REQUIRED
-./auth-summary.sh 45m    # Last 45 minutes
-./auth-summary.sh 12h    # Last 12 hours  
-./auth-summary.sh 3d     # Last 3 days  
-./auth-summary.sh 2w     # Last 2 weeks  
-./auth-summary.sh 1M     # Last 1 month  
+./auth-report.sh        12h    # last 12 hours
+./attack-report.sh 3d    # last 3 days
+./memory-report.sh 1w    # last 1 week
+
+./auth-report.sh --help        # shows usage + email flags
 ```
 
-### server-attack-report.sh (Attack Summary)
-```bash  
-# Make executable
-chmod +x server-attack-report.sh
+## ✉️ Emailing the report
 
-# Time range is REQUIRED
-./server-attack-report.sh 45m   # Last 45 minutes
-./server-attack-report.sh 12h   # Last 12 hours
-./server-attack-report.sh 3d    # Last 3 days
-./server-attack-report.sh 2w    # Last 2 weeks
-./server-attack-report.sh 1M    # Last 1 month
-```  
+All three scripts can email the report after printing it to the terminal. The email body is a plain-text copy of the report with ANSI escapes stripped.
 
-## 📊 Example Output
+### CLI flags (apply to every script)
 
-### auth-summary.sh Output
-```
-🔹 Authentication summary for last 2h (since 2025-10-04T08:30:45)
----------------------------------------
-Password: accepted=12 failed=564
-PubKey  : accepted=8 failed=3
-Invalid : 548
-PAMfail : 2
-Noise   : banner=18 preauth=5
+| Flag | Meaning |
+|------|---------|
+| `-e`, `--email ADDR` | Recipient — repeatable; combines with `$REPORT_EMAIL` |
+| `-f`, `--email-from ADDR` | Sender address (default: `root@<hostname>`) |
+| `-s`, `--email-subject TEXT` | Override default subject |
+| `--msmtp-account NAME` | msmtp account name from `~/.msmtprc` (passed as `-a`) |
+| `--msmtp-config PATH` | Path to msmtp config file (passed as `-C`) |
+| `--no-email` | Skip email even if recipients are configured |
 
-✅ Success = 20
-❌ Failed  = 1117
-⚠️ Noise   = 23
-Total=1160
+CLI flags take precedence over the env vars of the same name.
 
---------------------------------
+### Env vars
 
-All Accepted Publickey logs:
-2025-10-04T10:30:45+00:00 server sshd[12345]: Accepted publickey for admin from 192.168.1.100 port 22 ssh2
-2025-10-04T10:32:15+00:00 server sshd[12389]: Accepted publickey for user from 10.0.0.50 port 22 ssh2
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `REPORT_EMAIL` | _(unset)_ | Default recipient(s), comma-separated |
+| `REPORT_SENDER` | `root@$(hostname)` | Default `From:` address |
+| `EMAIL_CMD` | auto-detected | Force `msmtp`, `mail`, `mailx`, or `sendmail` |
+| `MSMTP_ACCOUNT` | _(unset)_ | msmtp account name (overridden by `--msmtp-account`) |
+| `MSMTP_CONFIG` | _(unset)_ | msmtp config path (overridden by `--msmtp-config`) |
 
---------------------------------
+### Auto-detected mailers
 
-All Failed Password logs:
-2025-10-04T10:25:30+00:00 server sshd[12301]: Failed password for root from 125.17.108.32 port 45234 ssh2
-2025-10-04T10:26:45+00:00 server sshd[12315]: Failed password for admin from 111.238.174.6 port 52178 ssh2
-```
+Detection order is **msmtp → mail → mailx → sendmail**. `msmtp` is preferred because it is a standalone SMTP client (TLS, SMTP auth, per-user config in `~/.msmtprc`) and does **not** require a running local MTA like Postfix/Exim. The other three require a local MTA to be installed and running.
 
-### server-attack-report.sh Output  
-```
-🔹 Analyzing logs for the last 2h (since 2025-10-04T08:30:45)
----------------------------------------
-1) Number of SSH login failures (Failed password): 564
-2) Number of Invalid user attempts: 548  
-3) Number of Banner exchange (noise scans): 18
+The scripts build a standard RFC-822 envelope (From/To/Subject/Content-Type headers + body) and pipe it to the chosen mailer's stdin. All four supported mailers accept this format, so swapping in msmtp is a strict superset of the default behavior.
 
-4) Top 10 IP addresses (all types):
-48 125.17.108.32
-47 111.238.174.6  
-46 103.16.202.187
-...
+### Examples
 
-5) Top 10 Usernames (from Failed/Invalid):
-312 root
-249 admin
-36 test
-33 postgres
-...
-
-6) Recent log examples:
-2025-10-04T10:53:42+00:00 server sshd[11713]: banner exchange: Connection from 3.130.96.91 port 38490: invalid format
-2025-10-04T10:54:56+00:00 server sshd[11725]: Failed password for root from 20.169.104.180 port 57770 ssh2
-```  
-
-## 🔧 System Requirements
-
-- **Linux with systemd** (Ubuntu 16.04+, CentOS 7+, Debian 8+, etc.)
-- **journalctl command** available
-- **Root or sudo privileges** (SSH logs are typically restricted)
-- **jq package** (for auth-summary.sh JSON parsing)
-
-### Installation of Dependencies
 ```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install jq
+# One-off email
+sudo ./attack-report.sh --email admin@example.com 12h
 
-# CentOS/RHEL
-sudo yum install jq
-# or for newer versions:
-sudo dnf install jq
+# Same thing, with the short flag
+sudo ./attack-report.sh -e admin@example.com 12h
+
+# Multiple recipients + custom subject
+sudo ./auth-report.sh \
+    -e sec@example.com -e ops@example.com \
+    -s "[ALERT] auth summary" 1d
+
+# msmtp with a named account and explicit config path
+# (no need to set env vars or rely on $HOME under sudo)
+sudo ./memory-report.sh \
+    --msmtp-account default \
+    --msmtp-config /home/$USER/.msmtprc \
+    --email admin@example.com 4h
+
+# Recipient via env var (set once in cron)
+REPORT_EMAIL=ops@example.com sudo ./memory-report.sh 1w
+
+# Mix: default recipient from env + extra CLI recipient + override subject
+sudo REPORT_EMAIL=ops@example.com \
+    ./auth-report.sh -e sec@example.com \
+    -s "[ALERT] daily auth" 1d
 ```
 
-## ⚠️ Important Notes
+> **Tip:** when running under `sudo`, `~/.msmtprc` won't be found because `$HOME` becomes `/root`. Always pass `--msmtp-config <path>` (or set `MSMTP_CONFIG`) when invoking with `sudo`.
 
-- **These scripts only report attacks; they do not block them**
-- **Requires elevated privileges** to access SSH logs via journalctl
-- **Time ranges are mandatory** - no default "all logs" option for performance reasons
-- **Modern systemd approach** - replaces traditional log file parsing
+### Configuration via `.env`
 
-## 🛡️ Recommended Security Setup
+A template is provided at [`.env.example`](.env.example). The scripts **auto-load** a `.env` file at startup — no `set -a && source .env` boilerplate needed.
 
-Combine these analysis tools with active protection:
+**Search order** (first match wins):
 
-### SSH Hardening
+| # | Path |
+|---|------|
+| 1 | `$REPORT_ENV_FILE` (explicit override) |
+| 2 | `$PWD/.env` (project-local — most common) |
+| 3 | `$HOME/.config/server-report-script/.env` (per-user) |
+| 4 | `/etc/server-report-script.env` (system-wide) |
+
+```bash
+# Copy and edit the template
+cp .env.example .env
+$EDITOR .env
+
+# Just run the script — .env is picked up automatically
+sudo ./attack-report.sh 24h
+```
+
+Disable auto-loading with `REPORTS_NO_AUTOLOAD=1`. Debug which file was loaded with `REPORT_ENV_DEBUG=1`. The `.env` file itself is gitignored.
+
+## 📥 Installation
+
+You can run the scripts directly from the repo, or install them system-wide.
+
+### Run from the repo
+
+```bash
+chmod +x *.sh lib/*.sh
+sudo ./auth-report.sh 12h
+```
+
+### Install to `/usr/local/bin`
+
+The scripts look for `lib/common.sh` in (first match wins):
+
+1. `$LIB_DIR` (env override)
+2. `<script_dir>/lib` (relative to the script — works for both in-repo and `/usr/local/bin/` if you install `lib/` alongside)
+3. `/usr/local/share/server-report-script/lib`
+4. `/usr/share/server-report-script/lib`
+
+```bash
+# Option A: keep lib/ alongside the scripts (simplest)
+sudo install -d /usr/local/bin
+sudo install -m 0755 auth-report.sh attack-report.sh memory-report.sh /usr/local/bin/
+sudo install -d /usr/local/share/server-report-script
+sudo cp -r lib /usr/local/share/server-report-script/
+# Now /usr/local/bin/auth-report.sh will look for lib/common.sh in both
+# /usr/local/bin/lib/ (missing) and /usr/local/share/server-report-script/lib/ (found).
+
+# Option B: put everything under /usr/local/share and symlink the scripts
+sudo install -d /usr/local/share/server-report-script
+sudo install -m 0755 *.sh lib/*.sh /usr/local/share/server-report-script/
+sudo install -d /usr/local/bin
+sudo ln -s /usr/local/share/server-report-script/auth-report.sh        /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/attack-report.sh /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/memory-report.sh /usr/local/bin/
+
+# Option C: explicit override via env
+sudo LIB_DIR=/opt/reports/lib ./auth-report.sh 12h
+```
+
+After any install method, verify with:
+
+```bash
+sudo ./auth-report.sh --help    # shows email flags
+sudo ./auth-report.sh 1h        # smoke-test the lib resolution
+```
+
+> Email send **failures are warnings**, not errors — the script still exits 0 and prints the report to stdout.
+
+## 🚀 Production deployment
+
+This is the recommended setup for a real server: scripts in `/usr/local/bin/`,
+system-wide config in `/etc/`, and reports running on a schedule.
+
+### Where `.env` should live
+
+The scripts search for `.env` in (first match wins):
+
+| # | Path | When to use |
+|---|------|-------------|
+| 1 | `$REPORT_ENV_FILE` | One-off override |
+| 2 | `$PWD/.env` | Dev work in the repo |
+| 3 | `$HOME/.config/server-report-script/.env` | Per-user installs |
+| 4 | `/etc/server-report-script.env` | **Production, system-wide** |
+
+**Use `/etc/server-report-script.env` for production.** Cron and systemd
+both run with a stripped environment where `$HOME` and `$PWD` aren't
+reliable, but `/etc/...` is always an absolute path. Don't put `.env` in
+`/usr/local/bin/` — it's in `PATH`, gets clobbered by package updates, and
+the permissions story is messy.
+
+```bash
+# System-wide config, readable only by root
+sudo tee /etc/server-report-script.env > /dev/null <<'EOF'
+REPORT_EMAIL="admin@example.com,ops@example.com"
+REPORT_SENDER="server-reports@example.com"
+MSMTP_ACCOUNT="default"
+EOF
+sudo chmod 0600 /etc/server-report-script.env    # protect creds
+```
+
+### Recommended install layout
+
+Keep scripts and `lib/` together under `/usr/local/share/`, and expose
+just the executables through `/usr/local/bin/`:
+
+```bash
+sudo install -d /usr/local/share/server-report-script
+sudo install -m 0755 auth-report.sh attack-report.sh memory-report.sh \
+    /usr/local/share/server-report-script/
+sudo cp -r lib /usr/local/share/server-report-script/
+
+sudo install -d /usr/local/bin
+sudo ln -s /usr/local/share/server-report-script/auth-report.sh   /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/attack-report.sh /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/memory-report.sh /usr/local/bin/
+```
+
+The lib-resolution fallback chain in [lib/common.sh](lib/common.sh) will
+find `lib/common.sh` at `/usr/local/share/server-report-script/lib/` automatically.
+
+### Scheduling — pick one
+
+#### Option A — `/etc/cron.d/` (simple)
+
+```bash
+sudo install -d /var/log/server-reports
+sudo tee /etc/cron.d/server-reports > /dev/null <<'EOF'
+# m h dom mon dow user  command
+0 6   * * *   root   /usr/local/bin/attack-report.sh 1d >> /var/log/server-reports/attack.log  2>&1
+0 7   * * *   root   /usr/local/bin/auth-report.sh  1d >> /var/log/server-reports/auth.log   2>&1
+0 *   * * *   root   /usr/local/bin/memory-report.sh 1h >> /var/log/server-reports/memory.log 2>&1
+EOF
+sudo chmod 0644 /etc/cron.d/server-reports
+```
+
+Notes:
+- `/etc/cron.d/` entries **must include a username field** (here: `root`).
+- Cron does not source your shell rc — but `/etc/server-report-script.env`
+  is an absolute path, so it works regardless of `$HOME` / `$PWD`.
+- Output is appended (use `>>` not `>`); emails are sent independently
+  via the `.env` settings.
+
+#### Option B — systemd timers (recommended for new setups)
+
+Better logging (`journalctl -u <name>`), automatic catch-up of missed
+runs, and per-service resource controls.
+
+```bash
+# Reusable service unit
+sudo tee /etc/systemd/system/server-report@.service > /dev/null <<'EOF'
+[Unit]
+Description=Server report (%i)
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/%i.sh 1d
+StandardOutput=append:/var/log/server-reports/%i.log
+StandardError=append:/var/log/server-reports/%i.log
+EOF
+
+# Timers — one per report
+sudo tee /etc/systemd/system/auth-report.timer > /dev/null <<'EOF'
+[Unit]
+Description=Daily SSH auth report
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo tee /etc/systemd/system/attack-report.timer > /dev/null <<'EOF'
+[Unit]
+Description=Daily SSH attack report
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo tee /etc/systemd/system/memory-report.timer > /dev/null <<'EOF'
+[Unit]
+Description=Hourly memory pressure report
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now auth-report.timer attack-report.timer memory-report.timer
+```
+
+Then trigger or inspect with:
+
+```bash
+sudo systemctl start auth-report.service      # run it now
+sudo journalctl -u auth-report.service -n 50 # see logs
+sudo systemctl list-timers --all              # see schedule
+```
+
+The `server-report@.service` template (`%i` = instance name) means a
+single unit file handles `auth-report`, `attack-report`, and
+`memory-report` — change the time range by editing the `ExecStart` line
+or passing `--time`.
+
+### Verify the install
+
+```bash
+# 1. Library resolution works from /usr/local/bin/
+sudo /usr/local/bin/auth-report.sh --help
+
+# 2. .env is loaded from /etc/
+sudo REPORT_ENV_DEBUG=1 /usr/local/bin/auth-report.sh --help
+# Expected: 🔧 Loading .env from: /etc/server-report-script.env
+
+# 3. End-to-end send (5-minute window, real email)
+sudo /usr/local/bin/attack-report.sh 5m
+
+# 4. Cron / timer path works
+sudo /usr/local/bin/memory-report.sh 1m   # should print + email
+```
+
+### Uninstall
+
+```bash
+sudo rm -f /usr/local/bin/auth-report.sh /usr/local/bin/attack-report.sh \
+         /usr/local/bin/memory-report.sh
+sudo rm -rf /usr/local/share/server-report-script
+sudo rm -f /etc/cron.d/server-reports
+sudo rm -f /etc/systemd/system/{auth,attack,memory,server-report@}-report.{service,timer}
+sudo systemctl daemon-reload
+sudo rm -f /etc/server-report-script.env
+```
+
+## ⏱️ Time-range syntax
+
+| Suffix | Meaning  | Example   |
+|--------|----------|-----------|
+| `Nm`   | minutes  | `45m`     |
+| `Nh`   | hours    | `12h`     |
+| `Nd`   | days     | `3d`      |
+| `Nw`   | weeks    | `2w`      |
+| `NM`   | months   | `1M`      |
+
+## 📊 What each script reports
+
+### `auth-report.sh`
+- Accepted/failed password + publickey counts
+- Invalid user, PAM failure, banner-exchange, preauth noise
+- Per-category full log listings
+- Totals: ✅ success / ❌ failed / ⚠️ noise
+
+### `attack-report.sh`
+- Counters: failed password, invalid user, banner exchange
+- **Top 10 attacker IPs** (from Failed/Invalid/Banner events)
+- **Top 10 targeted usernames**
+- 10 most recent attack log entries
+
+### `memory-report.sh`
+- Current `/proc/meminfo` state with usage %
+- PSI memory pressure (`/proc/pressure/memory`)
+- OOM-kill events from kernel log over the window
+- Low-memory and page-allocation warnings
+- Swap in/out event counts
+- Top 10 processes by RSS (current snapshot)
+- Recent kernel memory events
+
+## 🔧 Requirements
+
+- Linux with **systemd** (Ubuntu 16.04+, CentOS 7+, Debian 8+, …)
+- `journalctl`, `awk`, `ps` available
+- **Root or sudo** required (system logs are restricted)
+- `bash` 4+
+- For emailing: one of **`msmtp`** (preferred — standalone SMTP client), `mail`, `mailx`, or `sendmail` on `PATH`
+
+## ⚠️ Notes
+
+- These scripts **only report** — they do not block or mitigate.
+- All scripts return non-zero on bad input or missing privileges.
+
+## 🛡️ Recommended companion setup
+
+Combine these reports with active protection:
+
 ```bash
 # /etc/ssh/sshd_config
-Port 2222                          # Custom non-standard port
-PasswordAuthentication no          # Disable password auth  
-PubkeyAuthentication yes          # Enable key-based auth only
-PermitRootLogin no                # Disable root login
-MaxAuthTries 3                    # Limit auth attempts
+Port 2222
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin no
+MaxAuthTries 3
 ```
 
-### Automated Protection
-- **Fail2Ban**: Auto-ban IPs after repeated failures
-- **UFW/iptables**: Restrict SSH access to trusted networks
-- **Key-based authentication**: Eliminate password attacks entirely
+- **Fail2Ban** for automatic IP banning
+- **UFW/iptables** to restrict source networks
+- **Key-based authentication** to remove password attacks entirely
 
-## 📈 What's New (v2.0)
+---
 
-✅ **Migrated from file-based to journalctl** (better performance, automatic rotation handling)  
-✅ **Added full timestamp support** in all log displays  
-✅ **English interface** (replaced Thai text)  
-✅ **Enhanced time filtering** (added minutes support: `45m`)  
-✅ **Improved error handling** and systemd compatibility  
-✅ **Mandatory time ranges** for better performance  
-
-👨‍💻 **Authors**: Atipat Lorwongam with AI assistance  
-📅 **Updated**: October 2025  
-
+👨‍💻 Authors: Atipat Lorwongam with AI assistance
+📅 Updated: 2026-09
