@@ -2,9 +2,17 @@
 # Memory & swap report — current state plus OOM / low-memory events from journalctl.
 # Usage: ./server-memory-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Use BASH_SOURCE so this works whether the script is invoked as
+#   ./server-memory-report.sh  /path/to/server-memory-report.sh  bash server-memory-report.sh  source server-memory-report.sh
+SCRIPT_DIR_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${SCRIPT_DIR:-$SCRIPT_DIR_DEFAULT}"
+LIB_DIR_RESOLVED="$(resolve_lib_dir 2>/dev/null || echo "$SCRIPT_DIR_DEFAULT/lib")"
 # shellcheck source=lib/common.sh
-source "$SCRIPT_DIR/lib/common.sh"
+source "$LIB_DIR_RESOLVED/common.sh"
+unset LIB_DIR_RESOLVED SCRIPT_DIR_DEFAULT
+
+# Auto-load .env if present (no-op if not).
+load_env_file
 
 require_journalctl
 require_privileges

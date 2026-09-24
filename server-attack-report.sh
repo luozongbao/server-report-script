@@ -2,9 +2,17 @@
 # SSH attack-focused summary over a time window.
 # Usage: ./server-attack-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Use BASH_SOURCE so this works whether the script is invoked as
+#   ./server-attack-report.sh  /path/to/server-attack-report.sh  bash server-attack-report.sh  source server-attack-report.sh
+SCRIPT_DIR_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="${SCRIPT_DIR:-$SCRIPT_DIR_DEFAULT}"
+LIB_DIR_RESOLVED="$(resolve_lib_dir 2>/dev/null || echo "$SCRIPT_DIR_DEFAULT/lib")"
 # shellcheck source=lib/common.sh
-source "$SCRIPT_DIR/lib/common.sh"
+source "$LIB_DIR_RESOLVED/common.sh"
+unset LIB_DIR_RESOLVED SCRIPT_DIR_DEFAULT
+
+# Auto-load .env if present (no-op if not).
+load_env_file
 
 require_journalctl
 require_privileges
@@ -58,14 +66,14 @@ printf "${C_BOLD}   Total attack events   : %d${C_RESET}\n\n" "$TOTAL"
 
 # ---- Top IPs --------------------------------------------------------------
 section "4) Top 10 attacker IP addresses"
-grep -oE 'from ([0-9]{1,3}\.){3}[0-9]{1,3}' "$TMPFILE_ATTACKS" \
-    | awk '{print $2}' | top_n 10
+{ grep -oE 'from ([0-9]{1,3}\.){3}[0-9]{1,3}' "$TMPFILE_ATTACKS" \
+    | awk '{print $2}' || true; } | top_n 10
 
 # ---- Top usernames ---------------------------------------------------------
 section "5) Top 10 targeted usernames"
 # Match "for <user> from ..." (password) and "Invalid user <user> from ..." (invalid).
-grep -oE '(Failed password for|Invalid user) [^ ]+' "$TMPFILE_ATTACKS" \
-    | awk '{print $NF}' | top_n 10
+{ grep -oE '(Failed password for|Invalid user) [^ ]+' "$TMPFILE_ATTACKS" \
+    | awk '{print $NF}' || true; } | top_n 10
 
 # ---- Recent events ---------------------------------------------------------
 section "6) Recent attack log entries (last 10)"

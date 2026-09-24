@@ -12,6 +12,66 @@ else
     C_RED=''; C_GREEN=''; C_YELLOW=''; C_BLUE=''; C_BOLD=''; C_RESET=''
 fi
 
+# ---- .env auto-loader ------------------------------------------------------
+# Searches (in order) for a .env file and sources it before any other config
+# lookup happens. Respects REPORTS_NO_AUTOLOAD=1 to skip.
+#   1. $REPORT_ENV_FILE         (explicit override)
+#   2. $PWD/.env                (project-local)
+#   3. $HOME/.config/server-report-script/.env  (user-global)
+#   4. /etc/server-report-script.env            (system-wide)
+# Silent unless $REPORT_ENV_DEBUG=1.
+load_env_file() {
+    [ "${REPORTS_NO_AUTOLOAD:-0}" -eq 1 ] && return 0
+
+    local candidates=(
+        "${REPORT_ENV_FILE:-}"
+        "$PWD/.env"
+        "$HOME/.config/server-report-script/.env"
+        "/etc/server-report-script.env"
+    )
+    for f in "${candidates[@]}"; do
+        if [ -n "$f" ] && [ -r "$f" ]; then
+            if [ "${REPORT_ENV_DEBUG:-0}" -eq 1 ]; then
+                echo "🔧 Loading .env from: $f" >&2
+            fi
+            # `set -a` exports every assignment; `set +a` restores default.
+            set -a
+            # shellcheck disable=SC1090
+            source "$f"
+            set +a
+            return 0
+        fi
+    done
+    return 0
+}
+
+# ---- Resolve lib/common.sh install location --------------------------------
+# Print the directory that contains common.sh, by trying in order:
+#   1. $LIB_DIR                            (explicit override)
+#   2. <script_dir>/lib                   (where script_dir is set by the caller
+#                                          via SCRIPT_DIR_DEFAULT=$(cd "$(dirname
+#                                          "${BASH_SOURCE[0]}")" && pwd))
+#   3. /usr/local/share/server-report-script/lib
+#   4. /usr/share/server-report-script/lib
+# Echoes the resolved directory; empty on failure.
+resolve_lib_dir() {
+    local try
+    if [ -n "${LIB_DIR:-}" ] && [ -f "$LIB_DIR/common.sh" ]; then
+        printf '%s\n' "$LIB_DIR"; return 0
+    fi
+    if [ -n "${SCRIPT_DIR_DEFAULT:-}" ] && [ -f "$SCRIPT_DIR_DEFAULT/lib/common.sh" ]; then
+        printf '%s\n' "$SCRIPT_DIR_DEFAULT/lib"; return 0
+    fi
+    for try in \
+        /usr/local/share/server-report-script/lib \
+        /usr/share/server-report-script/lib; do
+        if [ -f "$try/common.sh" ]; then
+            printf '%s\n' "$try"; return 0
+        fi
+    done
+    return 1
+}
+
 # ---- Systemd check ---------------------------------------------------------
 require_journalctl() {
     if ! command -v journalctl >/dev/null 2>&1; then
@@ -159,7 +219,7 @@ parse_email_flags() {
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --email)
+            -e|--email)
                 [ $# -ge 2 ] || { echo "❌ --email requires an address" >&2; exit 1; }
                 REPORT_RECIPIENTS="${REPORT_RECIPIENTS:+$REPORT_RECIPIENTS }$2"
                 shift 2
@@ -168,7 +228,7 @@ parse_email_flags() {
                 REPORT_RECIPIENTS="${REPORT_RECIPIENTS:+$REPORT_RECIPIENTS }${1#--email=}"
                 shift
                 ;;
-            --email-from)
+            -f|--email-from)
                 [ $# -ge 2 ] || { echo "❌ --email-from requires an address" >&2; exit 1; }
                 REPORT_SENDER="$2"
                 shift 2
@@ -177,7 +237,7 @@ parse_email_flags() {
                 REPORT_SENDER="${1#--email-from=}"
                 shift
                 ;;
-            --email-subject)
+            -s|--email-subject)
                 [ $# -ge 2 ] || { echo "❌ --email-subject requires text" >&2; exit 1; }
                 REPORT_SUBJECT="$2"
                 shift 2
@@ -224,19 +284,20 @@ parse_email_flags() {
 email_help() {
     cat <<'EOF'
 Email options:
-  --email ADDR             Send report to ADDR (repeatable; combines with $REPORT_EMAIL)
-  --email-from ADDR        From: address (default: root@<hostname>)
-  --email-subject TEXT     Override default subject
-  --msmtp-account NAME     msmtp account name from ~/.msmtprc (passed as -a)
-  --msmtp-config PATH      Path to msmtp config file (passed as -C)
-  --no-email               Skip email even if recipients are configured
+  -e, --email ADDR         Send report to ADDR (repeatable; combines with $REPORT_EMAIL)
+  -f, --email-from ADDR    From: address (default: root@<hostname>)
+  -s, --email-subject TXT  Override default subject
+      --msmtp-account NAME msmtp account name from ~/.msmtprc (passed as -a)
+      --msmtp-config PATH  Path to msmtp config file (passed as -C)
+      --no-email           Skip email even if recipients are configured
 
-Env vars:
+Env vars (see .env.example):
   REPORT_EMAIL             Default recipient(s), comma-separated
   REPORT_SENDER            Default From: address
   EMAIL_CMD                Force a specific mailer: msmtp, mail, mailx, sendmail
   MSMTP_ACCOUNT            Default msmtp account (overridden by --msmtp-account)
   MSMTP_CONFIG             Default msmtp config path (overridden by --msmtp-config)
+  REPORT_ENV_FILE          Path to .env to auto-load (default: $PWD/.env or ~/.config/server-report-script/.env)
 EOF
 }
 

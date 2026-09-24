@@ -16,7 +16,9 @@ A small collection of Bash scripts for **analyzing SSH and memory pressure** on 
 
 - **Shared library** (`lib/common.sh`) — time parser, journalctl wrapper, helpers reused across scripts
 - **Time-range argument required** — `Nm` `Nh` `Nd` `Nw` `NM` (minutes, hours, days, weeks, months)
-- **Optional emailing** — `--email` flag or `REPORT_EMAIL` env var; ANSI stripped from body
+- **Optional emailing** — `-e` / `--email` flag, `REPORT_EMAIL` env var, or `.env` file (auto-loaded); ANSI stripped from body
+- **Auto-loads `.env`** — no `source .env` boilerplate; honors `$REPORT_ENV_FILE`, `$PWD/.env`, `$HOME/.config/...`, `/etc/...`
+- **Install-friendly** — scripts find `lib/common.sh` via `$LIB_DIR`, relative to the script, or in `/usr/local/share/...`
 - **Auto color output** — disabled when piped or redirected
 - **Privilege & dependency checks** — fails fast with clear messages
 - **Robust IP/username extraction** — regex-based, not positional word matching
@@ -42,9 +44,9 @@ All three scripts can email the report after printing it to the terminal. The em
 
 | Flag | Meaning |
 |------|---------|
-| `--email ADDR` | Recipient — repeatable; combines with `$REPORT_EMAIL` |
-| `--email-from ADDR` | Sender address (default: `root@<hostname>`) |
-| `--email-subject TEXT` | Override default subject |
+| `-e`, `--email ADDR` | Recipient — repeatable; combines with `$REPORT_EMAIL` |
+| `-f`, `--email-from ADDR` | Sender address (default: `root@<hostname>`) |
+| `-s`, `--email-subject TEXT` | Override default subject |
 | `--msmtp-account NAME` | msmtp account name from `~/.msmtprc` (passed as `-a`) |
 | `--msmtp-config PATH` | Path to msmtp config file (passed as `-C`) |
 | `--no-email` | Skip email even if recipients are configured |
@@ -73,10 +75,13 @@ The scripts build a standard RFC-822 envelope (From/To/Subject/Content-Type head
 # One-off email
 sudo ./server-attack-report.sh --email admin@example.com 12h
 
+# Same thing, with the short flag
+sudo ./server-attack-report.sh -e admin@example.com 12h
+
 # Multiple recipients + custom subject
 sudo ./auth-summary.sh \
-    --email sec@example.com --email ops@example.com \
-    --email-subject "[ALERT] auth summary" 1d
+    -e sec@example.com -e ops@example.com \
+    -s "[ALERT] auth summary" 1d
 
 # msmtp with a named account and explicit config path
 # (no need to set env vars or rely on $HOME under sudo)
@@ -90,23 +95,83 @@ REPORT_EMAIL=ops@example.com sudo ./server-memory-report.sh 1w
 
 # Mix: default recipient from env + extra CLI recipient + override subject
 sudo REPORT_EMAIL=ops@example.com \
-    ./auth-summary.sh --email sec@example.com \
-    --email-subject "[ALERT] daily auth" 1d
+    ./auth-summary.sh -e sec@example.com \
+    -s "[ALERT] daily auth" 1d
 ```
 
 > **Tip:** when running under `sudo`, `~/.msmtprc` won't be found because `$HOME` becomes `/root`. Always pass `--msmtp-config <path>` (or set `MSMTP_CONFIG`) when invoking with `sudo`.
 
 ### Configuration via `.env`
 
-A template is provided at [`.env.example`](.env.example). Copy and edit:
+A template is provided at [`.env.example`](.env.example). The scripts **auto-load** a `.env` file at startup — no `set -a && source .env` boilerplate needed.
+
+**Search order** (first match wins):
+
+| # | Path |
+|---|------|
+| 1 | `$REPORT_ENV_FILE` (explicit override) |
+| 2 | `$PWD/.env` (project-local — most common) |
+| 3 | `$HOME/.config/server-report-script/.env` (per-user) |
+| 4 | `/etc/server-report-script.env` (system-wide) |
 
 ```bash
+# Copy and edit the template
 cp .env.example .env
-set -a && source .env && set +a
+$EDITOR .env
+
+# Just run the script — .env is picked up automatically
 sudo ./server-attack-report.sh 24h
 ```
 
-The `.env` file is gitignored.
+Disable auto-loading with `REPORTS_NO_AUTOLOAD=1`. Debug which file was loaded with `REPORT_ENV_DEBUG=1`. The `.env` file itself is gitignored.
+
+## 📥 Installation
+
+You can run the scripts directly from the repo, or install them system-wide.
+
+### Run from the repo
+
+```bash
+chmod +x *.sh lib/*.sh
+sudo ./auth-summary.sh 12h
+```
+
+### Install to `/usr/local/bin`
+
+The scripts look for `lib/common.sh` in (first match wins):
+
+1. `$LIB_DIR` (env override)
+2. `<script_dir>/lib` (relative to the script — works for both in-repo and `/usr/local/bin/` if you install `lib/` alongside)
+3. `/usr/local/share/server-report-script/lib`
+4. `/usr/share/server-report-script/lib`
+
+```bash
+# Option A: keep lib/ alongside the scripts (simplest)
+sudo install -d /usr/local/bin
+sudo install -m 0755 auth-summary.sh server-attack-report.sh server-memory-report.sh /usr/local/bin/
+sudo install -d /usr/local/share/server-report-script
+sudo cp -r lib /usr/local/share/server-report-script/
+# Now /usr/local/bin/auth-summary.sh will look for lib/common.sh in both
+# /usr/local/bin/lib/ (missing) and /usr/local/share/server-report-script/lib/ (found).
+
+# Option B: put everything under /usr/local/share and symlink the scripts
+sudo install -d /usr/local/share/server-report-script
+sudo install -m 0755 *.sh lib/*.sh /usr/local/share/server-report-script/
+sudo install -d /usr/local/bin
+sudo ln -s /usr/local/share/server-report-script/auth-summary.sh        /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/server-attack-report.sh /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/server-memory-report.sh /usr/local/bin/
+
+# Option C: explicit override via env
+sudo LIB_DIR=/opt/reports/lib ./auth-summary.sh 12h
+```
+
+After any install method, verify with:
+
+```bash
+sudo ./auth-summary.sh --help    # shows email flags
+sudo ./auth-summary.sh 1h        # smoke-test the lib resolution
+```
 
 > Email send **failures are warnings**, not errors — the script still exits 0 and prints the report to stdout.
 
