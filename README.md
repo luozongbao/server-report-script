@@ -10,6 +10,7 @@ A small collection of Bash scripts for **analyzing SSH and memory pressure** on 
 | [`attack-report.sh`](attack-report.sh) | Attack-focused SSH summary: top IPs, top usernames, recent events |
 | [`memory-report.sh`](memory-report.sh) | Memory pressure: OOM kills, low-memory warnings, swap activity, current snapshot |
 | [`lib/common.sh`](lib/common.sh) | Shared library — time parser, journalctl helpers, email sending |
+| [`install.sh`](install.sh) | One-shot installer — copies scripts to `/usr/local/bin/`, `lib/` to `/usr/local/share/`, seeds `/etc/server-report-script.env` (0600) |
 | [`.env.example`](.env.example) | Template for recipient / sender / msmtp config |
 
 ## 🚀 Features
@@ -127,7 +128,8 @@ Disable auto-loading with `REPORTS_NO_AUTOLOAD=1`. Debug which file was loaded w
 
 ## 📥 Installation
 
-You can run the scripts directly from the repo, or install them system-wide.
+You can run the scripts directly from the repo, or install them system-wide
+with the bundled installer.
 
 ### Run from the repo
 
@@ -136,64 +138,89 @@ chmod +x *.sh lib/*.sh
 sudo ./auth-report.sh 12h
 ```
 
-### Install to `/usr/local/bin`
+### Install system-wide (`install.sh`)
 
-The scripts look for `lib/common.sh` in (first match wins):
-
-1. `$LIB_DIR` (env override; accepts either a lib directory or a direct
-   path to `common.sh`)
-2. `<script_dir>/lib` (relative to the script — works for both in-repo
-   and `/usr/local/bin/` if you install `lib/` alongside)
-3. `/usr/local/share/server-report-script/lib`
-4. `/usr/share/server-report-script/lib`
-
-The lookup is **self-contained** — it runs *before* any function from
-`lib/common.sh` is called, so system-wide installs (scripts in
-`/usr/local/bin/` with `lib/` somewhere else) work cleanly. If the
-library can't be located, you get a single error with install
-instructions rather than a cascade of `command not found`.
+The recommended way to install is the bundled installer. Run from the
+repo root:
 
 ```bash
-# Option A: keep lib/ alongside the scripts (simplest, no env needed)
-sudo install -d /usr/local/bin
-sudo install -m 0755 auth-report.sh attack-report.sh memory-report.sh /usr/local/bin/
-sudo install -d /usr/local/share/server-report-script
-sudo cp -r lib /usr/local/share/server-report-script/
-# Now /usr/local/bin/auth-report.sh will look for lib/common.sh in both
-# /usr/local/bin/lib/ (missing) and /usr/local/share/server-report-script/lib/ (found).
-
-# Option B: put everything under /usr/local/share and symlink the scripts
-sudo install -d /usr/local/share/server-report-script
-sudo install -m 0755 *.sh lib/*.sh /usr/local/share/server-report-script/
-sudo install -d /usr/local/bin
-sudo ln -s /usr/local/share/server-report-script/auth-report.sh        /usr/local/bin/
-sudo ln -s /usr/local/share/server-report-script/attack-report.sh /usr/local/bin/
-sudo ln -s /usr/local/share/server-report-script/memory-report.sh /usr/local/bin/
-
-# Option C: explicit override via env (works with no install at all)
-sudo LIB_DIR=/opt/reports/lib ./auth-report.sh 12h
-sudo LIB_DIR=/opt/reports/lib/common.sh ./auth-report.sh 12h   # direct path also OK
+sudo ./install.sh
 ```
 
-After any install method, verify with:
+That's it — one command. The installer is **idempotent** (safe to re-run)
+and produces this layout:
+
+| Path | Mode | Source |
+|------|------|--------|
+| `/usr/local/bin/{auth,attack,memory}-report.sh` | `0755` | copies of the scripts |
+| `/usr/local/share/server-report-script/lib/common.sh` | `0644` | the shared library |
+| `/etc/server-report-script.env` | `0600` | seeded from `.env.example` (only if missing) |
+
+After it finishes, edit the system-wide config and you're ready:
 
 ```bash
-sudo ./auth-report.sh --help    # shows email flags
-sudo ./auth-report.sh 1h        # smoke-test the lib resolution
+sudo $EDITOR /etc/server-report-script.env       # set REPORT_EMAIL, REPORT_SENDER, MSMTP_ACCOUNT, ...
+sudo /usr/local/bin/auth-report.sh --help        # smoke-test
+sudo REPORT_ENV_DEBUG=1 /usr/local/bin/auth-report.sh --help
+# Expected: "🔧 Loading .env from: /etc/server-report-script.env"
+sudo /usr/local/bin/attack-report.sh 5m          # end-to-end run
 ```
 
-> **Why the dedicated `/usr/local/share/server-report-script/lib`
-> location?** The scripts in `/usr/local/bin/` would otherwise need a
-> `lib/` directory next to them (uncommon — `lib/` next to binaries in
-> `/usr/local/bin/` is non-standard). The FHS-respecting split is
-> `bin/` for executables and `share/<project>/` for read-only data.
+#### Installer options
+
+```bash
+sudo ./install.sh              # install (or refresh) — env file preserved if present
+sudo ./install.sh --force      # overwrite an existing /etc/server-report-script.env
+sudo ./install.sh --dry-run    # show what would happen, change nothing
+sudo ./install.sh --uninstall  # remove scripts + lib (leaves /etc/server-report-script.env in place)
+./install.sh --help            # full usage
+
+# CI / packaging (testing only):
+sudo ./install.sh --prefix /opt/server-report-script --dry-run
+```
+
+#### Library lookup chain
+
+The scripts locate `lib/common.sh` themselves, so the install works
+whether you ran the installer, copied scripts by hand, or are running
+from the checkout. First match wins:
+
+1. `$LIB_DIR` — explicit override (accepts the lib dir OR a direct path to `common.sh`)
+2. `<script_dir>/lib` — bundled next to the script (works for in-repo and for `/usr/local/bin/` scripts when `lib/` was installed beside them)
+3. `/usr/local/share/server-report-script/lib` — produced by `install.sh`
+4. `/usr/share/server-report-script/lib` — distro-package fallback
+
+The lookup runs *before* any function from `lib/common.sh` is called, so
+system-wide installs work cleanly. If the library still can't be found,
+the script prints a single error with copy-paste install instructions
+rather than a cascade of `command not found`.
+
+#### Manual install (if you prefer)
+
+If you'd rather wire it up by hand, the equivalent of `sudo ./install.sh`
+is:
+
+```bash
+sudo install -d /usr/local/bin
+sudo install -m 0755 auth-report.sh attack-report.sh memory-report.sh \
+    /usr/local/bin/
+
+sudo install -d /usr/local/share/server-report-script/lib
+sudo install -m 0644 lib/common.sh \
+    /usr/local/share/server-report-script/lib/
+
+sudo install -d /etc
+sudo install -m 0600 .env.example /etc/server-report-script.env
+```
 
 > Email send **failures are warnings**, not errors — the script still exits 0 and prints the report to stdout.
 
 ## 🚀 Production deployment
 
-This is the recommended setup for a real server: scripts in `/usr/local/bin/`,
-system-wide config in `/etc/`, and reports running on a schedule.
+For a real server: scripts in `/usr/local/bin/`, system-wide config in
+`/etc/`, and reports running on a schedule. After `sudo ./install.sh`
+you're already most of the way there — drop your config into
+`/etc/server-report-script.env` and schedule the timers.
 
 ### Where `.env` should live
 
@@ -208,12 +235,16 @@ The scripts search for `.env` in (first match wins):
 
 **Use `/etc/server-report-script.env` for production.** Cron and systemd
 both run with a stripped environment where `$HOME` and `$PWD` aren't
-reliable, but `/etc/...` is always an absolute path. Don't put `.env` in
-`/usr/local/bin/` — it's in `PATH`, gets clobbered by package updates, and
-the permissions story is messy.
+reliable, but `/etc/...` is always an absolute path. `install.sh`
+seeds this file (mode `0600`, since SMTP creds often live there). Don't
+put `.env` in `/usr/local/bin/` — it's in `PATH`, gets clobbered by
+package updates, and the permissions story is messy.
 
 ```bash
-# System-wide config, readable only by root
+# After sudo ./install.sh, edit what was seeded:
+sudo $EDITOR /etc/server-report-script.env
+
+# Or, equivalently, write it from scratch:
 sudo tee /etc/server-report-script.env > /dev/null <<'EOF'
 REPORT_EMAIL="admin@example.com,ops@example.com"
 REPORT_SENDER="server-reports@example.com"
@@ -222,27 +253,29 @@ EOF
 sudo chmod 0600 /etc/server-report-script.env    # protect creds
 ```
 
-### Recommended install layout
+### Install layout produced by `install.sh`
 
-Keep scripts and `lib/` together under `/usr/local/share/`, and expose
-just the executables through `/usr/local/bin/`:
-
-```bash
-sudo install -d /usr/local/share/server-report-script
-sudo install -m 0755 auth-report.sh attack-report.sh memory-report.sh \
-    /usr/local/share/server-report-script/
-sudo cp -r lib /usr/local/share/server-report-script/
-
-sudo install -d /usr/local/bin
-sudo ln -s /usr/local/share/server-report-script/auth-report.sh   /usr/local/bin/
-sudo ln -s /usr/local/share/server-report-script/attack-report.sh /usr/local/bin/
-sudo ln -s /usr/local/share/server-report-script/memory-report.sh /usr/local/bin/
+```
+/usr/local/bin/
+├── auth-report.sh        (0755)
+├── attack-report.sh      (0755)
+└── memory-report.sh      (0755)
+/usr/local/share/server-report-script/
+└── lib/
+    └── common.sh         (0644)
+/etc/
+└── server-report-script.env   (0600)
 ```
 
-The lib-resolution fallback chain in [lib/common.sh](lib/common.sh) will
-find `lib/common.sh` at `/usr/local/share/server-report-script/lib/` automatically.
+The lib-resolution fallback chain in [lib/common.sh](lib/common.sh) finds
+`lib/common.sh` at `/usr/local/share/server-report-script/lib/`
+automatically — no `LIB_DIR` export needed.
 
 ### Scheduling — pick one
+
+After `sudo ./install.sh`, the executables live in `/usr/local/bin/`
+and the env config is auto-loaded from `/etc/server-report-script.env`.
+Both cron and systemd paths "just work."
 
 #### Option A — `/etc/cron.d/` (simple)
 
@@ -357,12 +390,15 @@ sudo /usr/local/bin/memory-report.sh 1m   # should print + email
 ### Uninstall
 
 ```bash
-sudo rm -f /usr/local/bin/auth-report.sh /usr/local/bin/attack-report.sh \
-         /usr/local/bin/memory-report.sh
-sudo rm -rf /usr/local/share/server-report-script
+# Easy path: use the installer
+sudo ./install.sh --uninstall
+
+# Plus your scheduling setup, if any:
 sudo rm -f /etc/cron.d/server-reports
 sudo rm -f /etc/systemd/system/{auth,attack,memory,server-report@}-report.{service,timer}
 sudo systemctl daemon-reload
+
+# Plus your env file (NOT touched by --uninstall, in case there's a custom setup):
 sudo rm -f /etc/server-report-script.env
 ```
 

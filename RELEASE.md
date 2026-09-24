@@ -7,6 +7,51 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ---
 
+## [2.0.1] — 2026-09-24
+
+Small QoL release — bundled a one-shot installer so the system-wide
+install no longer requires copying five `install -m ...` snippets from
+the README.
+
+### Added
+- **[`install.sh`](install.sh)** — single-command system install. Run as
+  root from the repo:
+  ```bash
+  sudo ./install.sh
+  ```
+  Produces:
+  - `/usr/local/bin/{auth,attack,memory}-report.sh` (`0755`)
+  - `/usr/local/share/server-report-script/lib/common.sh` (`0644`)
+  - `/etc/server-report-script.env` (`0600`, seeded from `.env.example` —
+    only if missing; existing files are preserved)
+  Idempotent and re-runnable. Supports `--force` (overwrite the env
+  file), `--dry-run`, `--uninstall`, `--prefix DIR` (for CI/packaging),
+  and `--help`.
+
+### Changed
+- **README install flow simplified.** The "Install to `/usr/local/bin`"
+  section now leads with `sudo ./install.sh`. The verbose manual steps
+  are kept as a "Manual install" sub-section for users who prefer them,
+  and the production-deployment section explicitly mentions that
+  `install.sh` already produces the right layout.
+- **Production deployment section** now starts with a one-liner pointing
+  at the installer and explicitly references `/etc/server-report-script.env`
+  (the recommended cron/timer config path).
+- **Uninstall section** uses `sudo ./install.sh --uninstall` as the
+  primary path, with manual `rm` commands kept as a fallback.
+
+### Notes
+- 2.0.1 is fully compatible with 2.0.0 — no breaking changes. If you
+  already installed 2.0.0 by hand, `sudo ./install.sh` will lay down the
+  same files in the same places, then leave your existing
+  `/etc/server-report-script.env` untouched.
+- The lib-resolution chain in [lib/common.sh](lib/common.sh) was not
+  changed; the installer honors it (scripts land in `/usr/local/bin/`,
+  `lib/` in `/usr/local/share/server-report-script/lib/`, the third
+  fallback path in the chain).
+
+---
+
 ## [2.0.0] — 2026-09-24 — *The rewrite*
 
 The 1.x line was a quick collection of inline scripts. **2.0 is a full
