@@ -87,8 +87,8 @@ sudo ./auth-report.sh \
 # (no need to set env vars or rely on $HOME under sudo)
 sudo ./memory-report.sh \
     --msmtp-account default \
-    --msmtp-config /home/zongbao/.msmtprc \
-    --email admin@lorwongam.com 4h
+    --msmtp-config /home/$USER/.msmtprc \
+    --email admin@example.com 4h
 
 # Recipient via env var (set once in cron)
 REPORT_EMAIL=ops@example.com sudo ./memory-report.sh 1w
@@ -174,6 +174,182 @@ sudo ./auth-report.sh 1h        # smoke-test the lib resolution
 ```
 
 > Email send **failures are warnings**, not errors — the script still exits 0 and prints the report to stdout.
+
+## 🚀 Production deployment
+
+This is the recommended setup for a real server: scripts in `/usr/local/bin/`,
+system-wide config in `/etc/`, and reports running on a schedule.
+
+### Where `.env` should live
+
+The scripts search for `.env` in (first match wins):
+
+| # | Path | When to use |
+|---|------|-------------|
+| 1 | `$REPORT_ENV_FILE` | One-off override |
+| 2 | `$PWD/.env` | Dev work in the repo |
+| 3 | `$HOME/.config/server-report-script/.env` | Per-user installs |
+| 4 | `/etc/server-report-script.env` | **Production, system-wide** |
+
+**Use `/etc/server-report-script.env` for production.** Cron and systemd
+both run with a stripped environment where `$HOME` and `$PWD` aren't
+reliable, but `/etc/...` is always an absolute path. Don't put `.env` in
+`/usr/local/bin/` — it's in `PATH`, gets clobbered by package updates, and
+the permissions story is messy.
+
+```bash
+# System-wide config, readable only by root
+sudo tee /etc/server-report-script.env > /dev/null <<'EOF'
+REPORT_EMAIL="admin@example.com,ops@example.com"
+REPORT_SENDER="server-reports@example.com"
+MSMTP_ACCOUNT="default"
+EOF
+sudo chmod 0600 /etc/server-report-script.env    # protect creds
+```
+
+### Recommended install layout
+
+Keep scripts and `lib/` together under `/usr/local/share/`, and expose
+just the executables through `/usr/local/bin/`:
+
+```bash
+sudo install -d /usr/local/share/server-report-script
+sudo install -m 0755 auth-report.sh attack-report.sh memory-report.sh \
+    /usr/local/share/server-report-script/
+sudo cp -r lib /usr/local/share/server-report-script/
+
+sudo install -d /usr/local/bin
+sudo ln -s /usr/local/share/server-report-script/auth-report.sh   /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/attack-report.sh /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/memory-report.sh /usr/local/bin/
+```
+
+The lib-resolution fallback chain in [lib/common.sh](lib/common.sh) will
+find `lib/common.sh` at `/usr/local/share/server-report-script/lib/` automatically.
+
+### Scheduling — pick one
+
+#### Option A — `/etc/cron.d/` (simple)
+
+```bash
+sudo install -d /var/log/server-reports
+sudo tee /etc/cron.d/server-reports > /dev/null <<'EOF'
+# m h dom mon dow user  command
+0 6   * * *   root   /usr/local/bin/attack-report.sh 1d >> /var/log/server-reports/attack.log  2>&1
+0 7   * * *   root   /usr/local/bin/auth-report.sh  1d >> /var/log/server-reports/auth.log   2>&1
+0 *   * * *   root   /usr/local/bin/memory-report.sh 1h >> /var/log/server-reports/memory.log 2>&1
+EOF
+sudo chmod 0644 /etc/cron.d/server-reports
+```
+
+Notes:
+- `/etc/cron.d/` entries **must include a username field** (here: `root`).
+- Cron does not source your shell rc — but `/etc/server-report-script.env`
+  is an absolute path, so it works regardless of `$HOME` / `$PWD`.
+- Output is appended (use `>>` not `>`); emails are sent independently
+  via the `.env` settings.
+
+#### Option B — systemd timers (recommended for new setups)
+
+Better logging (`journalctl -u <name>`), automatic catch-up of missed
+runs, and per-service resource controls.
+
+```bash
+# Reusable service unit
+sudo tee /etc/systemd/system/server-report@.service > /dev/null <<'EOF'
+[Unit]
+Description=Server report (%i)
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/%i.sh 1d
+StandardOutput=append:/var/log/server-reports/%i.log
+StandardError=append:/var/log/server-reports/%i.log
+EOF
+
+# Timers — one per report
+sudo tee /etc/systemd/system/auth-report.timer > /dev/null <<'EOF'
+[Unit]
+Description=Daily SSH auth report
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo tee /etc/systemd/system/attack-report.timer > /dev/null <<'EOF'
+[Unit]
+Description=Daily SSH attack report
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo tee /etc/systemd/system/memory-report.timer > /dev/null <<'EOF'
+[Unit]
+Description=Hourly memory pressure report
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now auth-report.timer attack-report.timer memory-report.timer
+```
+
+Then trigger or inspect with:
+
+```bash
+sudo systemctl start auth-report.service      # run it now
+sudo journalctl -u auth-report.service -n 50 # see logs
+sudo systemctl list-timers --all              # see schedule
+```
+
+The `server-report@.service` template (`%i` = instance name) means a
+single unit file handles `auth-report`, `attack-report`, and
+`memory-report` — change the time range by editing the `ExecStart` line
+or passing `--time`.
+
+### Verify the install
+
+```bash
+# 1. Library resolution works from /usr/local/bin/
+sudo /usr/local/bin/auth-report.sh --help
+
+# 2. .env is loaded from /etc/
+sudo REPORT_ENV_DEBUG=1 /usr/local/bin/auth-report.sh --help
+# Expected: 🔧 Loading .env from: /etc/server-report-script.env
+
+# 3. End-to-end send (5-minute window, real email)
+sudo /usr/local/bin/attack-report.sh 5m
+
+# 4. Cron / timer path works
+sudo /usr/local/bin/memory-report.sh 1m   # should print + email
+```
+
+### Uninstall
+
+```bash
+sudo rm -f /usr/local/bin/auth-report.sh /usr/local/bin/attack-report.sh \
+         /usr/local/bin/memory-report.sh
+sudo rm -rf /usr/local/share/server-report-script
+sudo rm -f /etc/cron.d/server-reports
+sudo rm -f /etc/systemd/system/{auth,attack,memory,server-report@}-report.{service,timer}
+sudo systemctl daemon-reload
+sudo rm -f /etc/server-report-script.env
+```
 
 ## ⏱️ Time-range syntax
 
