@@ -1,9 +1,9 @@
 #!/bin/bash
 # SSH attack-focused summary over a time window.
-# Usage: ./server-attack-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
+# Usage: ./attack-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
 
 # Use BASH_SOURCE so this works whether the script is invoked as
-#   ./server-attack-report.sh  /path/to/server-attack-report.sh  bash server-attack-report.sh  source server-attack-report.sh
+#   ./attack-report.sh  /path/to/attack-report.sh  bash attack-report.sh  source attack-report.sh
 SCRIPT_DIR_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SCRIPT_DIR:-$SCRIPT_DIR_DEFAULT}"
 LIB_DIR_RESOLVED="$(resolve_lib_dir 2>/dev/null || echo "$SCRIPT_DIR_DEFAULT/lib")"

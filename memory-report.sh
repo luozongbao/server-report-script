@@ -1,9 +1,9 @@
 #!/bin/bash
 # Memory & swap report — current state plus OOM / low-memory events from journalctl.
-# Usage: ./server-memory-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
+# Usage: ./memory-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
 
 # Use BASH_SOURCE so this works whether the script is invoked as
-#   ./server-memory-report.sh  /path/to/server-memory-report.sh  bash server-memory-report.sh  source server-memory-report.sh
+#   ./memory-report.sh  /path/to/memory-report.sh  bash memory-report.sh  source memory-report.sh
 SCRIPT_DIR_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SCRIPT_DIR:-$SCRIPT_DIR_DEFAULT}"
 LIB_DIR_RESOLVED="$(resolve_lib_dir 2>/dev/null || echo "$SCRIPT_DIR_DEFAULT/lib")"

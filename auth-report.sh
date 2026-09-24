@@ -1,9 +1,9 @@
 #!/bin/bash
 # Detailed SSH authentication summary over a time window.
-# Usage: ./auth-summary.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
+# Usage: ./auth-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
 
 # Use BASH_SOURCE so this works whether the script is invoked as
-#   ./auth-summary.sh  /path/to/auth-summary.sh  bash auth-summary.sh  source auth-summary.sh
+#   ./auth-report.sh  /path/to/auth-report.sh  bash auth-report.sh  source auth-report.sh
 SCRIPT_DIR_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SCRIPT_DIR:-$SCRIPT_DIR_DEFAULT}"
 LIB_DIR_RESOLVED="$(resolve_lib_dir 2>/dev/null || echo "$SCRIPT_DIR_DEFAULT/lib")"

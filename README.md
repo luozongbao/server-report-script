@@ -6,9 +6,9 @@ A small collection of Bash scripts for **analyzing SSH and memory pressure** on 
 
 | Script | Purpose |
 |--------|---------|
-| [`auth-summary.sh`](auth-summary.sh) | Detailed SSH authentication breakdown by category, with full per-category log listings |
-| [`server-attack-report.sh`](server-attack-report.sh) | Attack-focused SSH summary: top IPs, top usernames, recent events |
-| [`server-memory-report.sh`](server-memory-report.sh) | Memory pressure: OOM kills, low-memory warnings, swap activity, current snapshot |
+| [`auth-report.sh`](auth-report.sh) | Detailed SSH authentication breakdown by category, with full per-category log listings |
+| [`attack-report.sh`](attack-report.sh) | Attack-focused SSH summary: top IPs, top usernames, recent events |
+| [`memory-report.sh`](memory-report.sh) | Memory pressure: OOM kills, low-memory warnings, swap activity, current snapshot |
 | [`lib/common.sh`](lib/common.sh) | Shared library — time parser, journalctl helpers, email sending |
 | [`.env.example`](.env.example) | Template for recipient / sender / msmtp config |
 
@@ -29,11 +29,11 @@ A small collection of Bash scripts for **analyzing SSH and memory pressure** on 
 ```bash
 chmod +x *.sh lib/*.sh
 
-./auth-summary.sh        12h    # last 12 hours
-./server-attack-report.sh 3d    # last 3 days
-./server-memory-report.sh 1w    # last 1 week
+./auth-report.sh        12h    # last 12 hours
+./attack-report.sh 3d    # last 3 days
+./memory-report.sh 1w    # last 1 week
 
-./auth-summary.sh --help        # shows usage + email flags
+./auth-report.sh --help        # shows usage + email flags
 ```
 
 ## ✉️ Emailing the report
@@ -73,29 +73,29 @@ The scripts build a standard RFC-822 envelope (From/To/Subject/Content-Type head
 
 ```bash
 # One-off email
-sudo ./server-attack-report.sh --email admin@example.com 12h
+sudo ./attack-report.sh --email admin@example.com 12h
 
 # Same thing, with the short flag
-sudo ./server-attack-report.sh -e admin@example.com 12h
+sudo ./attack-report.sh -e admin@example.com 12h
 
 # Multiple recipients + custom subject
-sudo ./auth-summary.sh \
+sudo ./auth-report.sh \
     -e sec@example.com -e ops@example.com \
     -s "[ALERT] auth summary" 1d
 
 # msmtp with a named account and explicit config path
 # (no need to set env vars or rely on $HOME under sudo)
-sudo ./server-memory-report.sh \
+sudo ./memory-report.sh \
     --msmtp-account default \
     --msmtp-config /home/zongbao/.msmtprc \
     --email admin@lorwongam.com 4h
 
 # Recipient via env var (set once in cron)
-REPORT_EMAIL=ops@example.com sudo ./server-memory-report.sh 1w
+REPORT_EMAIL=ops@example.com sudo ./memory-report.sh 1w
 
 # Mix: default recipient from env + extra CLI recipient + override subject
 sudo REPORT_EMAIL=ops@example.com \
-    ./auth-summary.sh -e sec@example.com \
+    ./auth-report.sh -e sec@example.com \
     -s "[ALERT] daily auth" 1d
 ```
 
@@ -120,7 +120,7 @@ cp .env.example .env
 $EDITOR .env
 
 # Just run the script — .env is picked up automatically
-sudo ./server-attack-report.sh 24h
+sudo ./attack-report.sh 24h
 ```
 
 Disable auto-loading with `REPORTS_NO_AUTOLOAD=1`. Debug which file was loaded with `REPORT_ENV_DEBUG=1`. The `.env` file itself is gitignored.
@@ -133,7 +133,7 @@ You can run the scripts directly from the repo, or install them system-wide.
 
 ```bash
 chmod +x *.sh lib/*.sh
-sudo ./auth-summary.sh 12h
+sudo ./auth-report.sh 12h
 ```
 
 ### Install to `/usr/local/bin`
@@ -148,29 +148,29 @@ The scripts look for `lib/common.sh` in (first match wins):
 ```bash
 # Option A: keep lib/ alongside the scripts (simplest)
 sudo install -d /usr/local/bin
-sudo install -m 0755 auth-summary.sh server-attack-report.sh server-memory-report.sh /usr/local/bin/
+sudo install -m 0755 auth-report.sh attack-report.sh memory-report.sh /usr/local/bin/
 sudo install -d /usr/local/share/server-report-script
 sudo cp -r lib /usr/local/share/server-report-script/
-# Now /usr/local/bin/auth-summary.sh will look for lib/common.sh in both
+# Now /usr/local/bin/auth-report.sh will look for lib/common.sh in both
 # /usr/local/bin/lib/ (missing) and /usr/local/share/server-report-script/lib/ (found).
 
 # Option B: put everything under /usr/local/share and symlink the scripts
 sudo install -d /usr/local/share/server-report-script
 sudo install -m 0755 *.sh lib/*.sh /usr/local/share/server-report-script/
 sudo install -d /usr/local/bin
-sudo ln -s /usr/local/share/server-report-script/auth-summary.sh        /usr/local/bin/
-sudo ln -s /usr/local/share/server-report-script/server-attack-report.sh /usr/local/bin/
-sudo ln -s /usr/local/share/server-report-script/server-memory-report.sh /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/auth-report.sh        /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/attack-report.sh /usr/local/bin/
+sudo ln -s /usr/local/share/server-report-script/memory-report.sh /usr/local/bin/
 
 # Option C: explicit override via env
-sudo LIB_DIR=/opt/reports/lib ./auth-summary.sh 12h
+sudo LIB_DIR=/opt/reports/lib ./auth-report.sh 12h
 ```
 
 After any install method, verify with:
 
 ```bash
-sudo ./auth-summary.sh --help    # shows email flags
-sudo ./auth-summary.sh 1h        # smoke-test the lib resolution
+sudo ./auth-report.sh --help    # shows email flags
+sudo ./auth-report.sh 1h        # smoke-test the lib resolution
 ```
 
 > Email send **failures are warnings**, not errors — the script still exits 0 and prints the report to stdout.
@@ -187,19 +187,19 @@ sudo ./auth-summary.sh 1h        # smoke-test the lib resolution
 
 ## 📊 What each script reports
 
-### `auth-summary.sh`
+### `auth-report.sh`
 - Accepted/failed password + publickey counts
 - Invalid user, PAM failure, banner-exchange, preauth noise
 - Per-category full log listings
 - Totals: ✅ success / ❌ failed / ⚠️ noise
 
-### `server-attack-report.sh`
+### `attack-report.sh`
 - Counters: failed password, invalid user, banner exchange
 - **Top 10 attacker IPs** (from Failed/Invalid/Banner events)
 - **Top 10 targeted usernames**
 - 10 most recent attack log entries
 
-### `server-memory-report.sh`
+### `memory-report.sh`
 - Current `/proc/meminfo` state with usage %
 - PSI memory pressure (`/proc/pressure/memory`)
 - OOM-kill events from kernel log over the window
