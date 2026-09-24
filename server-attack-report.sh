@@ -11,13 +11,31 @@ require_privileges
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     sed -n '2,4p' "$0"
+    echo
+    email_help
     exit 0
 fi
 
-SINCE="$(parse_time_arg "${1-}")"
+# Pull email flags out first; whatever remains is the time range.
+parse_email_flags "$@"
+if [ "${#REMAINING_ARGS[@]}" -lt 1 ]; then
+    echo "❌ Usage: $0 [--email ADDR]... <time-range>" >&2
+    exit 1
+fi
+TIME_ARG="${REMAINING_ARGS[0]}"
+
+# If email is requested, capture all stdout to a file (we still tee to TTY).
+if [ "$REPORT_NO_EMAIL" -ne 1 ] && [ -n "$REPORT_RECIPIENTS" ]; then
+    REPORT_BODY_FILE="$(mktemp)"
+    trap 'rm -f "$TMPFILE_FULL" "$TMPFILE_ATTACKS" "$REPORT_BODY_FILE"' EXIT
+    exec > >(tee "$REPORT_BODY_FILE" >&1)
+else
+    REPORT_BODY_FILE="/dev/null"
+fi
+
+SINCE="$(parse_time_arg "$TIME_ARG")"
 TMPFILE_FULL="$(mktemp)"
 TMPFILE_ATTACKS="$(mktemp)"
-trap 'rm -f "$TMPFILE_FULL" "$TMPFILE_ATTACKS"' EXIT
 
 journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso \
     > "$TMPFILE_FULL"
@@ -26,7 +44,7 @@ journalctl --no-pager _COMM=sshd --since="$SINCE" --output=short-iso \
 grep -E "Failed password|Invalid user|banner exchange" "$TMPFILE_FULL" \
     > "$TMPFILE_ATTACKS" || true
 
-banner_script "Analyzing logs for the last $1 (since $SINCE)"
+banner_script "Analyzing logs for the last $TIME_ARG (since $SINCE)"
 
 FAILS=$(  grep -c "Failed password"  "$TMPFILE_ATTACKS" || true)
 INVALID=$(grep -c "Invalid user"      "$TMPFILE_ATTACKS" || true)
@@ -54,3 +72,4 @@ section "6) Recent attack log entries (last 10)"
 tail -10 "$TMPFILE_ATTACKS" || true
 
 printf "\n${C_BOLD}Reporting completed.${C_RESET}\n"
+send_email_if_requested "SSH attack report — last $TIME_ARG ($(hostname 2>/dev/null || echo server))"
