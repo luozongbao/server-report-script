@@ -56,12 +56,23 @@ load_env_file() {
 # Echoes the resolved directory; empty on failure.
 resolve_lib_dir() {
     local try
-    if [ -n "${LIB_DIR:-}" ] && [ -f "$LIB_DIR/common.sh" ]; then
-        printf '%s\n' "$LIB_DIR"; return 0
+    # 1. Explicit LIB_DIR override — accept either a lib dir or a direct
+    #    path to common.sh, so users can do either of:
+    #      LIB_DIR=/usr/local/share/server-report-script/lib  bash script.sh
+    #      LIB_DIR=/usr/local/share/server-report-script/lib/common.sh  bash script.sh
+    if [ -n "${LIB_DIR:-}" ]; then
+        if [ -f "$LIB_DIR/common.sh" ]; then
+            printf '%s\n' "$LIB_DIR"; return 0
+        fi
+        if [ -f "$LIB_DIR" ] && [ "$(basename -- "$LIB_DIR")" = "common.sh" ]; then
+            printf '%s\n' "$(dirname -- "$LIB_DIR")"; return 0
+        fi
     fi
+    # 2. Bundled next to the calling script
     if [ -n "${SCRIPT_DIR_DEFAULT:-}" ] && [ -f "$SCRIPT_DIR_DEFAULT/lib/common.sh" ]; then
         printf '%s\n' "$SCRIPT_DIR_DEFAULT/lib"; return 0
     fi
+    # 3. System-wide install locations
     for try in \
         /usr/local/share/server-report-script/lib \
         /usr/share/server-report-script/lib; do

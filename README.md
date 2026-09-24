@@ -18,7 +18,7 @@ A small collection of Bash scripts for **analyzing SSH and memory pressure** on 
 - **Time-range argument required** — `Nm` `Nh` `Nd` `Nw` `NM` (minutes, hours, days, weeks, months)
 - **Optional emailing** — `-e` / `--email` flag, `REPORT_EMAIL` env var, or `.env` file (auto-loaded); ANSI stripped from body
 - **Auto-loads `.env`** — no `source .env` boilerplate; honors `$REPORT_ENV_FILE`, `$PWD/.env`, `$HOME/.config/...`, `/etc/...`
-- **Install-friendly** — scripts find `lib/common.sh` via `$LIB_DIR`, relative to the script, or in `/usr/local/share/...`
+- **Install-friendly** — each script locates `lib/common.sh` itself with a 4-tier lookup, so it works whether you run from the checkout, copy scripts to `/usr/local/bin/`, or install via a distro package. If the library can't be found, you get a single actionable error with copy-paste install instructions — never a cascade of `command not found`.
 - **Auto color output** — disabled when piped or redirected
 - **Privilege & dependency checks** — fails fast with clear messages
 - **Robust IP/username extraction** — regex-based, not positional word matching
@@ -140,13 +140,21 @@ sudo ./auth-report.sh 12h
 
 The scripts look for `lib/common.sh` in (first match wins):
 
-1. `$LIB_DIR` (env override)
-2. `<script_dir>/lib` (relative to the script — works for both in-repo and `/usr/local/bin/` if you install `lib/` alongside)
+1. `$LIB_DIR` (env override; accepts either a lib directory or a direct
+   path to `common.sh`)
+2. `<script_dir>/lib` (relative to the script — works for both in-repo
+   and `/usr/local/bin/` if you install `lib/` alongside)
 3. `/usr/local/share/server-report-script/lib`
 4. `/usr/share/server-report-script/lib`
 
+The lookup is **self-contained** — it runs *before* any function from
+`lib/common.sh` is called, so system-wide installs (scripts in
+`/usr/local/bin/` with `lib/` somewhere else) work cleanly. If the
+library can't be located, you get a single error with install
+instructions rather than a cascade of `command not found`.
+
 ```bash
-# Option A: keep lib/ alongside the scripts (simplest)
+# Option A: keep lib/ alongside the scripts (simplest, no env needed)
 sudo install -d /usr/local/bin
 sudo install -m 0755 auth-report.sh attack-report.sh memory-report.sh /usr/local/bin/
 sudo install -d /usr/local/share/server-report-script
@@ -162,8 +170,9 @@ sudo ln -s /usr/local/share/server-report-script/auth-report.sh        /usr/loca
 sudo ln -s /usr/local/share/server-report-script/attack-report.sh /usr/local/bin/
 sudo ln -s /usr/local/share/server-report-script/memory-report.sh /usr/local/bin/
 
-# Option C: explicit override via env
+# Option C: explicit override via env (works with no install at all)
 sudo LIB_DIR=/opt/reports/lib ./auth-report.sh 12h
+sudo LIB_DIR=/opt/reports/lib/common.sh ./auth-report.sh 12h   # direct path also OK
 ```
 
 After any install method, verify with:
@@ -172,6 +181,12 @@ After any install method, verify with:
 sudo ./auth-report.sh --help    # shows email flags
 sudo ./auth-report.sh 1h        # smoke-test the lib resolution
 ```
+
+> **Why the dedicated `/usr/local/share/server-report-script/lib`
+> location?** The scripts in `/usr/local/bin/` would otherwise need a
+> `lib/` directory next to them (uncommon — `lib/` next to binaries in
+> `/usr/local/bin/` is non-standard). The FHS-respecting split is
+> `bin/` for executables and `share/<project>/` for read-only data.
 
 > Email send **failures are warnings**, not errors — the script still exits 0 and prints the report to stdout.
 

@@ -6,10 +6,54 @@
 #   ./auth-report.sh  /path/to/auth-report.sh  bash auth-report.sh  source auth-report.sh
 SCRIPT_DIR_DEFAULT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="${SCRIPT_DIR:-$SCRIPT_DIR_DEFAULT}"
-LIB_DIR_RESOLVED="$(resolve_lib_dir 2>/dev/null || echo "$SCRIPT_DIR_DEFAULT/lib")"
+
+# --- Locate and source lib/common.sh --------------------------------------
+# Self-contained lookup so install scenarios (script copied to /usr/local/bin
+# without a lib/ beside it) work without relying on common.sh being loaded.
+# Search order:
+#   1. $LIB_DIR                 — explicit override (accepts either the lib
+#                                dir, or a direct path to common.sh)
+#   2. <script_dir>/lib         — bundled next to this script (checkout)
+#   3. /usr/local/share/server-report-script/lib  — system install
+#   4. /usr/share/server-report-script/lib        — distro package
+_LIB_CANDIDATE=""
+if [ -n "${LIB_DIR:-}" ]; then
+    if [ -f "$LIB_DIR/common.sh" ]; then
+        _LIB_CANDIDATE="$LIB_DIR"
+    elif [ -f "$LIB_DIR" ] && [ "$(basename -- "$LIB_DIR")" = "common.sh" ]; then
+        _LIB_CANDIDATE="$(dirname -- "$LIB_DIR")"
+    fi
+fi
+if [ -z "$_LIB_CANDIDATE" ] && [ -f "$SCRIPT_DIR_DEFAULT/lib/common.sh" ]; then
+    _LIB_CANDIDATE="$SCRIPT_DIR_DEFAULT/lib"
+fi
+if [ -z "$_LIB_CANDIDATE" ]; then
+    for _lib_try in \
+        /usr/local/share/server-report-script/lib \
+        /usr/share/server-report-script/lib; do
+        if [ -f "$_lib_try/common.sh" ]; then
+            _LIB_CANDIDATE="$_lib_try"
+            break
+        fi
+    done
+fi
+if [ -z "$_LIB_CANDIDATE" ]; then
+    cat >&2 <<'__HELP__'
+❌ Cannot find lib/common.sh.
+
+   Copy the whole project (or just lib/common.sh) to the server:
+     sudo cp auth-report.sh /usr/local/bin/
+     sudo mkdir -p /usr/local/share/server-report-script
+     sudo cp -r lib  /usr/local/share/server-report-script/
+
+   Or point at a custom location:
+     sudo LIB_DIR=/path/to/lib ./auth-report.sh 12h
+__HELP__
+    exit 1
+fi
 # shellcheck source=lib/common.sh
-source "$LIB_DIR_RESOLVED/common.sh"
-unset LIB_DIR_RESOLVED SCRIPT_DIR_DEFAULT
+source "$_LIB_CANDIDATE/common.sh"
+unset _LIB_CANDIDATE _lib_try
 
 # Auto-load .env if present (no-op if not).
 load_env_file
