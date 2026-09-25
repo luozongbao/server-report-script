@@ -210,6 +210,32 @@ strip_ansi_copy() {
     printf '%s\n' "$out"
 }
 
+# Dedupe + normalize a recipient string.
+# Accepts space- or comma-separated input (or a mix); trims; drops empties;
+# preserves first-seen order; re-emits as comma-separated.
+# Echoes the normalized string.
+_dedupe_recipients() {
+    local raw="$1" seen="" out="" addr
+    # Split on commas first, then on whitespace within each chunk.
+    IFS=',' read -r -a parts <<< "$raw"
+    for part in "${parts[@]}"; do
+        # shellcheck disable=SC2206
+        addrs=( $part )
+        for addr in "${addrs[@]}"; do
+            # Trim leading/trailing whitespace.
+            addr="${addr#"${addr%%[![:space:]]*}"}"
+            addr="${addr%"${addr##*[![:space:]]}"}"
+            [ -z "$addr" ] && continue
+            case " $seen " in
+                *" $addr "*) continue ;;
+            esac
+            seen="${seen:+$seen }$addr"
+            out="${out:+$out, }$addr"
+        done
+    done
+    printf '%s' "$out"
+}
+
 # Parse --email / --email-from / --email-subject / --no-email out of the
 # argument list. Sets REPORT_RECIPIENTS / REPORT_SENDER / REPORT_SUBJECT /
 # REPORT_NO_EMAIL globals and writes remaining positional args into the
@@ -289,6 +315,14 @@ parse_email_flags() {
                 ;;
         esac
     done
+
+    # Collapse duplicates so REPORT_RECIPIENTS contains each address once.
+    # $REPORT_RECIPIENTS may be space-separated (built up by --email repeats)
+    # or comma-separated (from REPORT_EMAIL env). _dedupe_recipients handles
+    # both and emits comma-separated output.
+    if [ -n "$REPORT_RECIPIENTS" ]; then
+        REPORT_RECIPIENTS="$(_dedupe_recipients "$REPORT_RECIPIENTS")"
+    fi
 }
 
 # Print the email-flag help block. Scripts include it in --help output.
@@ -308,6 +342,8 @@ Env vars (see .env.example):
   EMAIL_CMD                Force a specific mailer: msmtp, mail, mailx, sendmail
   MSMTP_ACCOUNT            Default msmtp account (overridden by --msmtp-account)
   MSMTP_CONFIG             Default msmtp config path (overridden by --msmtp-config)
+  MSMTP_DEBUG=1            Pass --debug to msmtp to print the SMTP session
+  REPORT_EMAIL_FAIL_EXIT=1 Exit non-zero if email send fails (use for cron)
   REPORT_ENV_FILE          Path to .env to auto-load (default: $PWD/.env or ~/.config/server-report-script/.env)
 EOF
 }
@@ -358,15 +394,25 @@ send_email_if_requested() {
 
     # Invoke the mailer. All four supported mailers accept "< envelope" and
     # honor the From/To headers in the envelope (or extract them from the
-    # body via -t). msmtp adds -a/-C when configured.
+    # body via -t). msmtp adds -a/-C when configured. MSMTP_DEBUG=1 turns
+    # on msmtp's SMTP-session trace (handy when delivery silently fails).
+    local debug_flag=""
+    if [ "$mailer" = "msmtp" ] && [ "${MSMTP_DEBUG:-0}" -eq 1 ]; then
+        debug_flag="--debug"
+    fi
     local rc=0
     # shellcheck disable=SC2086
-    "$mailer" -t $extra < "$envelope" || rc=$?
+    "$mailer" $debug_flag -t $extra < "$envelope" || rc=$?
 
     rm -f "$envelope" "$clean_body"
 
     if [ "$rc" -ne 0 ]; then
         echo "⚠️  Email send failed (mailer=$mailer, rc=$rc). Report still printed above." >&2
+        # REPORT_EMAIL_FAIL_EXIT=1 makes cron / automation jobs surface
+        # failures instead of silently exiting 0. Default is warn-only.
+        if [ "${REPORT_EMAIL_FAIL_EXIT:-0}" -eq 1 ]; then
+            exit 1
+        fi
     else
         printf '%s✉️  Report emailed to: %s%s\n' "${C_GREEN}" "$REPORT_RECIPIENTS" "${C_RESET}"
     fi
