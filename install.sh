@@ -49,7 +49,8 @@ Usage: sudo ./install.sh [OPTIONS]
 Install server-report-script system-wide.
 
 Options:
-  --force         Overwrite existing /etc/server-report-script.env
+  --force         Overwrite existing per-user .env (at the XDG path of the
+                 invoking user, when the installer was run via sudo)
   --dry-run       Print what would happen, change nothing
   --uninstall     Remove everything this script installs
   --prefix DIR    Install under DIR (defaults to /usr/local, /etc)
@@ -59,10 +60,19 @@ Options:
 Files installed:
   <prefix>/bin/{auth,attack,memory}-report.sh        (0755)
   <prefix>/share/server-report-script/lib/common.sh  (0644)
-  /etc/server-report-script.env                      (0600, only if missing)
+  <home>/<user>/.config/server-report-script/.env    (0600, only if missing —
+                                                    seeded for the invoking
+                                                    user when run via sudo)
 
-When /etc/server-report-script.env already exists, it is left alone unless
---force is passed. Edit it with:  sudo \$EDITOR /etc/server-report-script.env
+The installer ONLY seeds the per-user XDG path. It does not create or
+modify /etc/server-report-script.env. That path remains a *read-only*
+last-resort fallback in the scripts' .env auto-loader (useful for cron /
+systemd timers running as root with no invoking user context) but the
+installer never writes to it.
+
+When the user-level config already exists, it is left alone unless
+--force is passed. Edit it with:
+  sudo -u <user> \$EDITOR /home/<user>/.config/server-report-script/.env
 EOF
 }
 
@@ -146,7 +156,7 @@ do_install() {
     info "Installing server-report-script"
     printf '   bin   : %s\n' "$PREFIX_BIN"
     printf '   share : %s\n' "$PREFIX_SHARE"
-    printf '   etc   : %s/server-report-script.env\n' "$PREFIX_ETC"
+    printf '   env   : <invoking-user> ~/.config/server-report-script/.env\n'
 
     # 1. Scripts to /usr/local/bin/ (0755)
     run_cmd "create $PREFIX_BIN" install -d "$PREFIX_BIN"
@@ -168,27 +178,70 @@ do_install() {
             install -m 0644 "$f" "$PREFIX_SHARE/lib/"
     done
 
-    # 3. /etc/server-report-script.env from .env.example (0600).
-    # PREFIX_ETC is /etc by default but respects --prefix for testing.
-    local env_path="$PREFIX_ETC/server-report-script.env"
+    # 3. Seed the .env file.
+    # Since 2.1.0: we ONLY seed the per-user XDG path
+    # ($SUDO_USER's ~/.config/server-report-script/.env). The installer
+    # never creates /etc/server-report-script.env. That path is preserved
+    # as a *last-resort read-only fallback* by load_env_file — existing
+    # files there continue to work and are not deleted, but the installer
+    # will not seed or migrate to it.
+    #
+    # If the script is invoked as direct root (no $SUDO_USER) — e.g. a
+    # systemd postinst, container entrypoint, or `sudo -i` — we cannot
+    # safely pick a home dir, so we skip seeding and tell the user to
+    # create one for whichever user will run the scripts.
     local example="$SCRIPT_DIR_DEFAULT/.env.example"
-    if [ -f "$env_path" ] && [ "$FORCE" -ne 1 ]; then
-        warn "$env_path already exists — leaving as is (use --force to overwrite)"
-        warn "Edit with:  sudo \$EDITOR $env_path"
-    else
-        if [ ! -f "$example" ]; then
-            die "Cannot seed $env_path — $example missing in the repo"
+    if [ ! -f "$example" ]; then
+        die "Cannot seed .env — $example missing in the repo"
+    fi
+
+    local sudo_user="" sudo_home="" user_env_path=""
+    if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        sudo_user="$SUDO_USER"
+        sudo_home="$(getent passwd "$sudo_user" 2>/dev/null | cut -d: -f6)"
+        if [ -n "$sudo_home" ] && [ -d "$sudo_home" ]; then
+            user_env_path="$sudo_home/.config/server-report-script/.env"
         fi
-        run_cmd "create $PREFIX_ETC" install -d "$PREFIX_ETC"
-        run_cmd "install $example -> $env_path (mode 0600)" \
-            install -m 0600 "$example" "$env_path"
+    fi
+
+    if [ -n "$user_env_path" ]; then
+        if [ -f "$user_env_path" ] && [ "$FORCE" -ne 1 ]; then
+            warn "$user_env_path already exists — leaving as is (use --force to overwrite)"
+            warn "Edit with:  sudo -u $sudo_user \$EDITOR $user_env_path"
+        else
+            run_cmd "create $(dirname "$user_env_path")" \
+                install -d -o "$sudo_user" -m 0700 "$(dirname "$user_env_path")"
+            run_cmd "install $example -> $user_env_path (mode 0600, owned by $sudo_user)" \
+                install -o "$sudo_user" -g "$sudo_user" -m 0600 \
+                    "$example" "$user_env_path"
+        fi
+    else
+        warn "Cannot determine invoking user (no \$SUDO_USER)."
+        warn "Skipping .env seeding. To create one manually:"
+        warn "  sudo -u <user> mkdir -m 0700 /home/<user>/.config/server-report-script"
+        warn "  sudo -u <user> install -m 0600 $example /home/<user>/.config/server-report-script/.env"
     fi
 
     info "Installed."
     printf '\n'
     printf '%sNext steps:%s\n' "${C_BOLD}" "${C_RESET}"
-    printf '  1. Edit the system config:\n'
-    printf '       sudo $EDITOR %s\n' "$env_path"
+    if [ -n "$user_env_path" ]; then
+        printf '  1. Edit the per-user config:\n'
+        printf '       sudo -u %s \$EDITOR %s\n' "$sudo_user" "$user_env_path"
+    else
+        printf '  1. Create the per-user config (skipped — no \$SUDO_USER):\n'
+        printf '       sudo -u <user> mkdir -m 0700 /home/<user>/.config/server-report-script\n'
+        printf '       sudo -u <user> install -m 0600 %s /home/<user>/.config/server-report-script/.env\n' "$example"
+    fi
+    printf '     At minimum, set:\n'
+    printf '       REPORT_EMAIL   — recipient address(es), comma-separated\n'
+    printf '       REPORT_SENDER  — From: address\n'
+    printf '     If you use msmtp, also set:\n'
+    printf '       MSMTP_ACCOUNT  — the account name inside .msmtprc (e.g. "default")\n'
+    printf '       MSMTP_CONFIG   — path readable by root, e.g. /etc/msmtprc\n'
+    printf '                        (scripts run under sudo, so $HOME=/root;\n'
+    printf '                         ~/.msmtprc of an unprivileged user will\n'
+    printf '                         either be unreadable or not be found)\n'
     printf '  2. Verify the install:\n'
     printf '       sudo /usr/local/bin/auth-report.sh --help\n'
     printf '       sudo REPORT_ENV_DEBUG=1 /usr/local/bin/auth-report.sh --help\n'

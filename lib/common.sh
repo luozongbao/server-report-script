@@ -17,16 +17,36 @@ fi
 # lookup happens. Respects REPORTS_NO_AUTOLOAD=1 to skip.
 #   1. $REPORT_ENV_FILE         (explicit override)
 #   2. $PWD/.env                (project-local)
-#   3. $HOME/.config/server-report-script/.env  (user-global)
-#   4. /etc/server-report-script.env            (system-wide)
+#   3. $SUDO_UID's / $HOME's ~/.config/server-report-script/.env (per-user)
+#   4. /etc/server-report-script.env            (system-wide, last fallback)
 # Silent unless $REPORT_ENV_DEBUG=1.
+#
+# Per-user resolution: when run under `sudo`, $HOME points to /root (or
+# whatever sudo sets), so the literal "$HOME/.config/..." path points
+# at the wrong place. We honour $SUDO_UID / $SUDO_USER first and resolve
+# their real home via getent, falling back to $HOME only when no
+# privilege-escalation context is present.
 load_env_file() {
     [ "${REPORTS_NO_AUTOLOAD:-0}" -eq 1 ] && return 0
+
+    local user_env=""
+    # Prefer $SUDO_UID's home (covers sudo and sudo -u <user>), then
+    # $SUDO_USER, then $HOME as a last resort.
+    if [ -n "${SUDO_UID:-}" ] && [ "${SUDO_UID:-0}" -ne 0 ]; then
+        user_env="$(getent passwd "$SUDO_UID" 2>/dev/null | cut -d: -f6)"
+    fi
+    if [ -z "$user_env" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+        user_env="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)"
+    fi
+    if [ -z "$user_env" ]; then
+        user_env="$HOME"
+    fi
+    user_env="$user_env/.config/server-report-script/.env"
 
     local candidates=(
         "${REPORT_ENV_FILE:-}"
         "$PWD/.env"
-        "$HOME/.config/server-report-script/.env"
+        "$user_env"
         "/etc/server-report-script.env"
     )
     for f in "${candidates[@]}"; do
