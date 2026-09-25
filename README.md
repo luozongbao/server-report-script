@@ -10,7 +10,7 @@ A small collection of Bash scripts for **analyzing SSH and memory pressure** on 
 | [`attack-report.sh`](attack-report.sh) | Attack-focused SSH summary: top IPs, top usernames, recent events |
 | [`memory-report.sh`](memory-report.sh) | Memory pressure: OOM kills, low-memory warnings, swap activity, current snapshot |
 | [`lib/common.sh`](lib/common.sh) | Shared library — time parser, journalctl helpers, email sending |
-| [`install.sh`](install.sh) | One-shot installer — copies scripts to `/usr/local/bin/`, `lib/` to `/usr/local/share/`, seeds `/etc/server-report-script.env` (0600) |
+| [`install.sh`](install.sh) | One-shot installer — copies scripts to `/usr/local/bin/`, `lib/` to `/usr/local/share/`, seeds a user-level `.env` at `~/.config/server-report-script/.env`. `load_env_file` still reads `/etc/server-report-script.env` as a read-only last-resort fallback for cron / systemd timers. |
 | [`.env.example`](.env.example) | Template for recipient / sender / msmtp config |
 
 ## 🚀 Features
@@ -62,7 +62,9 @@ CLI flags take precedence over the env vars of the same name.
 | `REPORT_SENDER` | `root@$(hostname)` | Default `From:` address |
 | `EMAIL_CMD` | auto-detected | Force `msmtp`, `mail`, `mailx`, or `sendmail` |
 | `MSMTP_ACCOUNT` | _(unset)_ | msmtp account name (overridden by `--msmtp-account`) |
-| `MSMTP_CONFIG` | _(unset)_ | msmtp config path (overridden by `--msmtp-config`) |
+| `MSMTP_CONFIG` | _(unset)_ | msmtp config path (overridden by `--msmtp-config`). **Set this when running under sudo** — see below. |
+| `MSMTP_DEBUG` | `0` | When `1`, passes `--debug` to msmtp so the full SMTP session is printed. |
+| `REPORT_EMAIL_FAIL_EXIT` | `0` | When `1`, the script exits non-zero if email send fails (use for cron / systemd timers). |
 
 ### Auto-detected mailers
 
@@ -91,6 +93,20 @@ sudo ./memory-report.sh \
     --msmtp-config /home/$USER/.msmtprc \
     --email admin@example.com 4h
 
+# System-wide install + cron: write /root/.config/server-report-script/.env
+# pointing at a root-readable .msmtprc (e.g. /etc/msmtprc). Cron / systemd
+# timers run as root, so $HOME=/root and the unprivileged user's ~/.msmtprc
+# won't be used. (2.1.0+: install.sh no longer seeds /etc/...env for you;
+# /etc/server-report-script.env still works as a read-only fallback if you
+# write it yourself.)
+sudo install -d -m 0700 /root/.config/server-report-script
+sudo tee /root/.config/server-report-script/.env >/dev/null <<'EOF'
+MSMTP_ACCOUNT=default
+MSMTP_CONFIG=/etc/msmtprc
+EOF
+sudo chmod 0600 /root/.config/server-report-script/.env
+sudo /usr/local/bin/memory-report.sh --email admin@example.com 4h   # uses env file
+
 # Recipient via env var (set once in cron)
 REPORT_EMAIL=ops@example.com sudo ./memory-report.sh 1w
 
@@ -100,7 +116,7 @@ sudo REPORT_EMAIL=ops@example.com \
     -s "[ALERT] daily auth" 1d
 ```
 
-> **Tip:** when running under `sudo`, `~/.msmtprc` won't be found because `$HOME` becomes `/root`. Always pass `--msmtp-config <path>` (or set `MSMTP_CONFIG`) when invoking with `sudo`.
+> **Tip:** when running under `sudo`, `~/.msmtprc` won't be found because `$HOME` becomes `/root` (and the original user's home may not be readable). Always pass `--msmtp-config <path>` (or set `MSMTP_CONFIG`) when invoking with `sudo`. For system-wide installs, point it at a root-readable location such as `/etc/msmtprc` and put that path in `/root/.config/server-report-script/.env` (cron's `$HOME`) so cron / systemd timers pick it up automatically. The legacy `/etc/server-report-script.env` still works as a read-only fallback if you keep using it.
 
 ### Configuration via `.env`
 
@@ -113,7 +129,7 @@ A template is provided at [`.env.example`](.env.example). The scripts **auto-loa
 | 1 | `$REPORT_ENV_FILE` (explicit override) |
 | 2 | `$PWD/.env` (project-local — most common) |
 | 3 | `$HOME/.config/server-report-script/.env` (per-user) |
-| 4 | `/etc/server-report-script.env` (system-wide) |
+| 4 | `/etc/server-report-script.env` (system-wide, **read-only fallback since 2.1.0**) |
 
 ```bash
 # Copy and edit the template
@@ -154,25 +170,48 @@ and produces this layout:
 |------|------|--------|
 | `/usr/local/bin/{auth,attack,memory}-report.sh` | `0755` | copies of the scripts |
 | `/usr/local/share/server-report-script/lib/common.sh` | `0644` | the shared library |
-| `/etc/server-report-script.env` | `0600` | seeded from `.env.example` (only if missing) |
+| `/home/<user>/.config/server-report-script/.env` *(when run via sudo)* | `0700` dir / `0600` file | seeded from `.env.example`, **owned by the invoking user** |
+| `/etc/server-report-script.env` *(read-only fallback)* | `0600` | **NOT created by `install.sh` 2.1.0+** — still readable as the last-resort fallback in the `.env` search order, useful for cron / systemd timers running as root |
 
-After it finishes, edit the system-wide config and you're ready:
+The `.env` file lands at the **invoking user's XDG path** (`$SUDO_USER`'s
+`~/.config/server-report-script/.env`) so the SMTP-adjacent config lives
+next to the user's `~/.msmtprc` and stays user-private. `/etc/server-report-script.env`
+is preserved as a **last-resort fallback** — picked up by the auto-loader
+only when no user-level config exists. This matters for cron / systemd
+timers that run as root with no `$SUDO_USER` context: they fall through to
+`/etc/...` automatically.
+
+> **Installer change in 2.1.0:** `install.sh` no longer seeds
+> `/etc/server-report-script.env`. If you want a fallback there, write
+> the file yourself (the installer won't manage it). See
+> [RELEASE.md](RELEASE.md) → `2.1.0` for migration notes.
+
+After it finishes, edit the config the installer chose and you're ready:
 
 ```bash
-sudo $EDITOR /etc/server-report-script.env       # set REPORT_EMAIL, REPORT_SENDER, MSMTP_ACCOUNT, ...
+# User-level install (run via sudo):
+sudo -u <user> $EDITOR /home/<user>/.config/server-report-script/.env
 sudo /usr/local/bin/auth-report.sh --help        # smoke-test
 sudo REPORT_ENV_DEBUG=1 /usr/local/bin/auth-report.sh --help
-# Expected: "🔧 Loading .env from: /etc/server-report-script.env"
+# Expected: "🔧 Loading .env from: /home/<user>/.config/server-report-script/.env"
 sudo /usr/local/bin/attack-report.sh 5m          # end-to-end run
+
+# System-only fallback (no $SUDO_USER / cron-only setup):
+sudo install -d -m 0700 /root/.config/server-report-script
+sudo tee /root/.config/server-report-script/.env > /dev/null <<'EOF'
+# ...your config...
+EOF
+sudo chmod 0600 /root/.config/server-report-script/.env
+# Expected: "🔧 Loading .env from: /root/.config/server-report-script/.env"
 ```
 
 #### Installer options
 
 ```bash
 sudo ./install.sh              # install (or refresh) — env file preserved if present
-sudo ./install.sh --force      # overwrite an existing /etc/server-report-script.env
+sudo ./install.sh --force      # overwrite the existing .env (user-level when run via sudo, else /etc)
 sudo ./install.sh --dry-run    # show what would happen, change nothing
-sudo ./install.sh --uninstall  # remove scripts + lib (leaves /etc/server-report-script.env in place)
+sudo ./install.sh --uninstall  # remove scripts + lib (leaves any .env in place)
 ./install.sh --help            # full usage
 
 # CI / packaging (testing only):
@@ -209,18 +248,19 @@ sudo install -d /usr/local/share/server-report-script/lib
 sudo install -m 0644 lib/common.sh \
     /usr/local/share/server-report-script/lib/
 
-sudo install -d /etc
-sudo install -m 0600 .env.example /etc/server-report-script.env
+# 2.1.0+: install.sh does NOT seed /etc/server-report-script.env.
+# Either let install.sh create the user-level XDG seed for you
+# (default when run via sudo) or set up your cron config by hand:
+sudo -u <user> install -d -m 0700 \
+    /home/<user>/.config/server-report-script
+sudo -u <user> install -m 0600 .env.example \
+    /home/<user>/.config/server-report-script/.env
 ```
-
-> Email send **failures are warnings**, not errors — the script still exits 0 and prints the report to stdout.
-
-## 🚀 Production deployment
-
-For a real server: scripts in `/usr/local/bin/`, system-wide config in
-`/etc/`, and reports running on a schedule. After `sudo ./install.sh`
-you're already most of the way there — drop your config into
-`/etc/server-report-script.env` and schedule the timers.
+per-user `.env` at
+`~/.config/server-report-script/.env`, and reports running on a schedule.
+After `sudo ./install.sh` you're already most of the way there — drop your
+config into the seeded XDG `.env` (or root's `~/.config/...` for cron) and
+schedule the timers.
 
 ### Where `.env` should live
 
@@ -230,27 +270,37 @@ The scripts search for `.env` in (first match wins):
 |---|------|-------------|
 | 1 | `$REPORT_ENV_FILE` | One-off override |
 | 2 | `$PWD/.env` | Dev work in the repo |
-| 3 | `$HOME/.config/server-report-script/.env` | Per-user installs |
-| 4 | `/etc/server-report-script.env` | **Production, system-wide** |
+| 3 | `$HOME/.config/server-report-script/.env` | **Default install location** (per-user XDG; `install.sh` seeds here when run via `sudo`). For cron, use `/root/.config/server-report-script/.env`. |
+| 4 | `/etc/server-report-script.env` | **Read-only last-resort fallback** (no longer seeded by `install.sh` 2.1.0+). Still useful for crontabs that already use it — write the file by hand. |
 
-**Use `/etc/server-report-script.env` for production.** Cron and systemd
-both run with a stripped environment where `$HOME` and `$PWD` aren't
-reliable, but `/etc/...` is always an absolute path. `install.sh`
-seeds this file (mode `0600`, since SMTP creds often live there). Don't
-put `.env` in `/usr/local/bin/` — it's in `PATH`, gets clobbered by
+**The installer seeds the per-user XDG path** (`$SUDO_USER`'s
+`~/.config/server-report-script/.env`, mode `0700` dir + `0600` file,
+owned by that user) by default. `/etc/server-report-script.env` is
+preserved as a **read-only last-resort fallback** — the auto-loader still
+reads it, but the installer doesn't write or manage it. Useful for cron /
+systemd timers that run as root with no `$SUDO_USER` context, and for
+multi-admin setups that don't map to a single user. Both paths work;
+the auto-loader just searches them in order.
+
+If you run cron as a non-root user, point the crontab at the user-level
+`.env` directly with `REPORT_ENV_FILE=...` instead of relying on `$HOME`.
+
+Don't put `.env` in `/usr/local/bin/` — it's in `PATH`, gets clobbered by
 package updates, and the permissions story is messy.
 
 ```bash
-# After sudo ./install.sh, edit what was seeded:
-sudo $EDITOR /etc/server-report-script.env
+# After sudo ./install.sh, edit what was seeded (user-level):
+sudo -u <user> $EDITOR /home/<user>/.config/server-report-script/.env
 
-# Or, equivalently, write it from scratch:
-sudo tee /etc/server-report-script.env > /dev/null <<'EOF'
+# Or, for system-only / cron-as-root setups, write a root-level XDG .env:
+sudo install -d -m 0700 /root/.config/server-report-script
+sudo tee /root/.config/server-report-script/.env > /dev/null <<'EOF'
 REPORT_EMAIL="admin@example.com,ops@example.com"
 REPORT_SENDER="server-reports@example.com"
 MSMTP_ACCOUNT="default"
+MSMTP_CONFIG=/etc/msmtprc
 EOF
-sudo chmod 0600 /etc/server-report-script.env    # protect creds
+sudo chmod 0600 /root/.config/server-report-script/.env    # protect creds
 ```
 
 ### Install layout produced by `install.sh`
@@ -260,6 +310,13 @@ sudo chmod 0600 /etc/server-report-script.env    # protect creds
 ├── auth-report.sh        (0755)
 ├── attack-report.sh      (0755)
 └── memory-report.sh      (0755)
+/usr/local/share/server-report-script/
+└── lib/
+    └── common.sh         (0644)
+# 2.1.0+ — no /etc/server-report-script.env is created here.
+# The installer only writes to the user's ~/.config/server-report-script/.env
+# (or prints manual instructions when there's no $SUDO_USER).
+# /etc/server-report-script.env is only read by the auto-loader as a fallback.
 /usr/local/share/server-report-script/
 └── lib/
     └── common.sh         (0644)
@@ -273,9 +330,12 @@ automatically — no `LIB_DIR` export needed.
 
 ### Scheduling — pick one
 
-After `sudo ./install.sh`, the executables live in `/usr/local/bin/`
-and the env config is auto-loaded from `/etc/server-report-script.env`.
-Both cron and systemd paths "just work."
+After `sudo ./install.sh`, the executables live in `/usr/local/bin/` and
+the env config auto-loads from whichever `.env` path the auto-loader
+finds first — typically `/root/.config/server-report-script/.env` for
+cron / systemd timers, falling back to `/etc/server-report-script.env`
+if you've written one there yourself. Both cron and systemd paths
+"just work."
 
 #### Option A — `/etc/cron.d/` (simple)
 
@@ -292,8 +352,11 @@ sudo chmod 0644 /etc/cron.d/server-reports
 
 Notes:
 - `/etc/cron.d/` entries **must include a username field** (here: `root`).
-- Cron does not source your shell rc — but `/etc/server-report-script.env`
-  is an absolute path, so it works regardless of `$HOME` / `$PWD`.
+- Cron does not source your shell rc. The `load_env_file` auto-loader
+  reads in order: `$REPORT_ENV_FILE`, `$PWD/.env`,
+  `/root/.config/server-report-script/.env` (resolved-`$HOME` for
+  cron), then `/etc/server-report-script.env` (last-resort fallback).
+  Use whichever path makes sense for your setup.
 - Output is appended (use `>>` not `>`); emails are sent independently
   via the `.env` settings.
 

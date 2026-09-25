@@ -7,6 +7,73 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ---
 
+## [2.1.0] — 2026-09-25
+
+Minor release — installer no longer seeds `/etc/server-report-script.env`.
+The user-level XDG path is now the only path the installer manages; the
+`/etc/...` location is reduced to a **read-only last-resort fallback**
+in [`load_env_file`](lib/common.sh). This matches how the scripts are
+actually invoked in 2026: 95% of the time as a non-cron user via
+`./auth-report.sh` or `sudo ./attack-report.sh`, where seeding config
+into `/etc/` is the wrong default.
+
+### Changed (installer)
+- **[`install.sh`](install.sh) no longer creates or touches
+  `/etc/server-report-script.env`.** When run via `sudo`, the example
+  `.env` is seeded **only** to the invoking user's XDG path —
+  `/home/<user>/.config/server-report-script/.env` (mode `0700`
+  directory, `0600` file, owned by `<user>`). When run without
+  `$SUDO_USER` (rare), the installer skips seeding entirely and prints
+  copy-paste manual instructions rather than writing to `/etc/`.
+  *Behaviour change from 2.0.2, which seeded both paths.*
+- **`--uninstall`** still leaves any pre-existing
+  `/etc/server-report-script.env` untouched (it didn't create it, so
+  removing it would be presumptuous). It only removes files it
+  itself installed.
+- **`--force`** still overwrites the user-level XDG seed; it no longer
+  has any `/etc/` side effect.
+- Layout summary (`install.sh --dry-run` first page) now points at
+  `<invoking-user> ~/.config/server-report-script/.env` instead of
+  `/etc/server-report-script.env`.
+
+### Changed (library)
+- *No functional change.* The [lib/common.sh](lib/common.sh)
+  `load_env_file` search order still ends with `/etc/server-report-script.env`
+  as a last-resort fallback, so cron / systemd timers that run as root
+  with no `$SUDO_USER` context keep working — they just no longer get
+  the file seeded there automatically. If you relied on that, write
+  `/etc/server-report-script.env` yourself (or, better, drop a root-level
+  `~/.config/server-report-script/.env` and rely on the resolved-`$HOME`
+  tier above it).
+
+### Notes
+- **2.1.0 is backward-compatible with 2.0.2 in terms of running scripts.**
+  Any existing `/etc/server-report-script.env` you have is still picked
+  up by the auto-loader. The change is purely in what the *installer*
+  writes on a fresh install.
+- **If you upgrade a 2.0.2 system:** the upgrade is a no-op for any
+  `/etc/server-report-script.env` you already have — `install.sh` is
+  idempotent and never overwrites or deletes it. To migrate to the new
+  default, just copy the file to the user-level XDG path and delete
+  the `/etc` copy manually:
+  ```bash
+  sudo -u <user> install -d -m 0700 \
+      /home/<user>/.config/server-report-script
+  sudo cp /etc/server-report-script.env \
+          /home/<user>/.config/server-report-script/.env
+  sudo chown <user>:<user> \
+          /home/<user>/.config/server-report-script/.env
+  sudo chmod 0600 /home/<user>/.config/server-report-script/.env
+  ```
+  Skipping the migration is also fine — `/etc/server-report-script.env`
+  will continue to be read as a fallback.
+- After upgrading, re-run `sudo ./install.sh` to refresh
+  `/usr/local/share/server-report-script/lib/common.sh` and
+  `/usr/local/bin/*-report.sh`. No flags needed; the installer is
+  idempotent.
+
+---
+
 ## [2.0.2] — 2026-09-25
 
 Patch release — small but useful improvements to email delivery,
@@ -46,6 +113,20 @@ copy at `/usr/local/bin`.
   in `/usr/local/bin/` pick it up automatically on next run.
 - Documented in [`.env.example`](.env.example) under the
   `msmtp-specific` block.
+
+### Changed (installer)
+- **`.env` now seeds to the invoking user's XDG path, not `/etc`.** When
+  [`install.sh`](install.sh) detects `$SUDO_USER`, it seeds the config at
+  `/home/<user>/.config/server-report-script/.env` (mode `0700` directory,
+  `0600` file, owned by that user) instead of `/etc/server-report-script.env`.
+  This keeps SMTP-adjacent config next to the user's `~/.msmtprc` and
+  keeps the file user-private. The `/etc` path is **kept as the last-resort
+  fallback** — the `load_env_file` search order in [lib/common.sh](lib/common.sh)
+  still ends with `/etc/server-report-script.env`, so cron / systemd
+  timers that run as root with no `$SUDO_USER` context keep working.
+- The "Next steps" output now tells you *which* level was used (user vs.
+  system) and prints the right `sudo -u <user> $EDITOR ...` command when
+  applicable.
 
 ---
 
