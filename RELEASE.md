@@ -7,6 +7,48 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ---
 
+## [2.0.2] — 2026-09-25
+
+Patch release — small but useful improvements to email delivery,
+discovered while debugging a delivery issue reported on the installed
+copy at `/usr/local/bin`.
+
+### Changed
+- **Recipient deduplication.** [`parse_email_flags`](lib/common.sh) in
+  [lib/common.sh](lib/common.sh) now collapses duplicate addresses before
+  building the mail envelope. Previously, passing `--email ADDR` on the
+  command line while `REPORT_EMAIL` was also set produced an envelope
+  with `To: ADDR ADDR` (two space-separated copies of the same address),
+  which worked but was ugly and could trip strict msmtp parsers.
+  The new `_dedupe_recipients` helper accepts both comma- and
+  space-separated input, trims whitespace, preserves first-seen order,
+  and re-emits as a clean comma-separated list.
+
+### Added
+- **`MSMTP_DEBUG=1`** — when set, [lib/common.sh](lib/common.sh) passes
+  `--debug` to msmtp so the full SMTP session (EHLO, STARTTLS, RCPT,
+  DATA, response codes) is printed to stderr. Useful when delivery
+  silently fails (auth blip, wrong `from=`, recipient rejected). Set
+  it temporarily while debugging, then unset.
+- **`REPORT_EMAIL_FAIL_EXIT=1`** — when set, [`send_email_if_requested`](lib/common.sh)
+  exits with status `1` if the mailer returns non-zero, instead of just
+  printing a warning. Recommended for cron jobs and systemd timers so
+  failures alert you (cron will mail the output; a `.service` with
+  `OnFailure=` can page you) instead of silently succeeding.
+
+### Notes
+- 2.0.2 is fully compatible with 2.0.1. No breaking changes.
+- The default behavior is unchanged: email send failures still warn but
+  exit `0`. Both new env vars are opt-in.
+- After upgrading, run `sudo ./install.sh` (no flags needed — it's
+  idempotent) to copy the new [lib/common.sh](lib/common.sh) into
+  `/usr/local/share/server-report-script/lib/`. The installed scripts
+  in `/usr/local/bin/` pick it up automatically on next run.
+- Documented in [`.env.example`](.env.example) under the
+  `msmtp-specific` block.
+
+---
+
 ## [2.0.1] — 2026-09-24
 
 Small QoL release — bundled a one-shot installer so the system-wide
