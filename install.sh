@@ -195,13 +195,28 @@ do_install() {
         die "Cannot seed .env — $example missing in the repo"
     fi
 
-    local sudo_user="" sudo_home="" user_env_path=""
+    local sudo_user="" sudo_home="" user_env_path="" skip_reason=""
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
         sudo_user="$SUDO_USER"
-        sudo_home="$(getent passwd "$sudo_user" 2>/dev/null | cut -d: -f6)"
+        if command -v getent >/dev/null 2>&1; then
+            sudo_home="$(getent passwd "$sudo_user" 2>/dev/null | cut -d: -f6)"
+        else
+            skip_reason="getent not available"
+        fi
+        # Fall back to $HOME (sudo sets it to the invoking user's home unless
+        # the operator used `sudo -i` / `sudo su -`, both of which leave
+        # $HOME=/root and are handled by the SUDO_USER check above).
+        if [ -z "$sudo_home" ] && [ -n "${HOME:-}" ] && [ "$HOME" != "/root" ]; then
+            sudo_home="$HOME"
+            [ -n "$skip_reason" ] && skip_reason="$skip_reason; fell back to \$HOME"
+        fi
         if [ -n "$sudo_home" ] && [ -d "$sudo_home" ]; then
             user_env_path="$sudo_home/.config/server-report-script/.env"
+        elif [ -n "$sudo_user" ]; then
+            skip_reason="${skip_reason:-could not resolve home for user '$sudo_user'}"
         fi
+    else
+        skip_reason="no \$SUDO_USER (script was not invoked via sudo from a non-root user)"
     fi
 
     if [ -n "$user_env_path" ]; then
@@ -216,7 +231,7 @@ do_install() {
                     "$example" "$user_env_path"
         fi
     else
-        warn "Cannot determine invoking user (no \$SUDO_USER)."
+        warn "Cannot determine invoking user (${skip_reason})."
         warn "Skipping .env seeding. To create one manually:"
         warn "  sudo -u <user> mkdir -m 0700 /home/<user>/.config/server-report-script"
         warn "  sudo -u <user> install -m 0600 $example /home/<user>/.config/server-report-script/.env"
