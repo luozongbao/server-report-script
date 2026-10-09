@@ -7,6 +7,30 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **[`memory-report.sh`](memory-report.sh) — time-range argument is now optional.**
+  The current-state sections (1, 1b, 5) never depended on a time window, so
+  requiring one to run the report was friction for nothing. When the argument
+  is omitted, the kernel-log sections (2, 3, 4, 6) scan the **full kernel
+  ring buffer** (`journalctl -k` with no `--since`) instead of exiting with
+  a usage error. The banner and the email subject both reflect "no time
+  filter" when the argument is absent.
+  - Existing invocations that pass `<time-range>` (including the cron /
+    systemd timer entries in [README.md](README.md)) continue to work
+    unchanged — behaviour for the *with-argument* case is identical.
+  - Install flow is unchanged. Just re-run `sudo ./install.sh` to refresh
+    `/usr/local/bin/memory-report.sh`; no flags required.
+
+### Notes
+- This is a behavioural loosening, not a tightening — no existing script
+  invocation will start failing as a result of this change.
+- The auto-detected mailer, `--email` / `--no-email` flags, and `load_env_file`
+  behaviour are all unaffected.
+
+---
+
 ## [2.1.0] — 2026-09-25
 
 Minor release — installer no longer seeds `/etc/server-report-script.env`.

@@ -8,7 +8,7 @@ A small collection of Bash scripts for **analyzing SSH and memory pressure** on 
 |--------|---------|
 | [`auth-report.sh`](auth-report.sh) | Detailed SSH authentication breakdown by category, with full per-category log listings |
 | [`attack-report.sh`](attack-report.sh) | Attack-focused SSH summary: top IPs, top usernames, recent events |
-| [`memory-report.sh`](memory-report.sh) | Memory pressure: OOM kills, low-memory warnings, swap activity, current snapshot |
+| [`memory-report.sh`](memory-report.sh) | Memory pressure: OOM kills, low-memory warnings, swap activity, current snapshot. Time-range argument is **optional** — without one, kernel-log sections scan the full ring buffer. |
 | [`lib/common.sh`](lib/common.sh) | Shared library — time parser, journalctl helpers, email sending |
 | [`install.sh`](install.sh) | One-shot installer — copies scripts to `/usr/local/bin/`, `lib/` to `/usr/local/share/`, seeds a user-level `.env` at `~/.config/server-report-script/.env`. `load_env_file` still reads `/etc/server-report-script.env` as a read-only last-resort fallback for cron / systemd timers. |
 | [`.env.example`](.env.example) | Template for recipient / sender / msmtp config |
@@ -16,7 +16,7 @@ A small collection of Bash scripts for **analyzing SSH and memory pressure** on 
 ## 🚀 Features
 
 - **Shared library** (`lib/common.sh`) — time parser, journalctl wrapper, helpers reused across scripts
-- **Time-range argument required** — `Nm` `Nh` `Nd` `Nw` `NM` (minutes, hours, days, weeks, months)
+- **Time-range argument** — required by SSH reports, optional for the memory report (current-state sections need no window). Format: `Nm` `Nh` `Nd` `Nw` `NM` (minutes, hours, days, weeks, months)
 - **Optional emailing** — `-e` / `--email` flag, `REPORT_EMAIL` env var, or `.env` file (auto-loaded); ANSI stripped from body
 - **Auto-loads `.env`** — no `source .env` boilerplate; honors `$REPORT_ENV_FILE`, `$PWD/.env`, `$HOME/.config/...`, `/etc/...`
 - **Install-friendly** — each script locates `lib/common.sh` itself with a 4-tier lookup, so it works whether you run from the checkout, copy scripts to `/usr/local/bin/`, or install via a distro package. If the library can't be found, you get a single actionable error with copy-paste install instructions — never a cascade of `command not found`.
@@ -32,7 +32,8 @@ chmod +x *.sh lib/*.sh
 
 ./auth-report.sh        12h    # last 12 hours
 ./attack-report.sh 3d    # last 3 days
-./memory-report.sh 1w    # last 1 week
+./memory-report.sh       # full kernel ring buffer (no time filter)
+./memory-report.sh 1w    # last 1 week (optional for memory-report)
 
 ./auth-report.sh --help        # shows usage + email flags
 ```
@@ -345,7 +346,7 @@ sudo tee /etc/cron.d/server-reports > /dev/null <<'EOF'
 # m h dom mon dow user  command
 0 6   * * *   root   /usr/local/bin/attack-report.sh 1d >> /var/log/server-reports/attack.log  2>&1
 0 7   * * *   root   /usr/local/bin/auth-report.sh  1d >> /var/log/server-reports/auth.log   2>&1
-0 *   * * *   root   /usr/local/bin/memory-report.sh 1h >> /var/log/server-reports/memory.log 2>&1
+0 *   * * *   root   /usr/local/bin/memory-report.sh    >> /var/log/server-reports/memory.log 2>&1
 EOF
 sudo chmod 0644 /etc/cron.d/server-reports
 ```
@@ -430,8 +431,10 @@ sudo systemctl list-timers --all              # see schedule
 
 The `server-report@.service` template (`%i` = instance name) means a
 single unit file handles `auth-report`, `attack-report`, and
-`memory-report` — change the time range by editing the `ExecStart` line
-or passing `--time`.
+`memory-report` — adjust the time range by editing the `ExecStart` line.
+`memory-report.sh` accepts no time-range argument and scans the full
+kernel ring buffer on each run, which is the most useful default for an
+hourly scheduled check.
 
 ### Verify the install
 
@@ -447,7 +450,8 @@ sudo REPORT_ENV_DEBUG=1 /usr/local/bin/auth-report.sh --help
 sudo /usr/local/bin/attack-report.sh 5m
 
 # 4. Cron / timer path works
-sudo /usr/local/bin/memory-report.sh 1m   # should print + email
+sudo /usr/local/bin/memory-report.sh      # no time-range — scans the full kernel ring buffer
+sudo /usr/local/bin/memory-report.sh 1h   # also valid — filters to the last hour
 ```
 
 ### Uninstall
@@ -490,9 +494,14 @@ sudo rm -f /etc/server-report-script.env
 - 10 most recent attack log entries
 
 ### `memory-report.sh`
+
+Current-state sections (1, 1b, 5) always run. Kernel-log sections (2, 3, 4, 6)
+scan the last `[time-range]` if provided, or the **full kernel ring buffer** if
+no time range is given.
+
 - Current `/proc/meminfo` state with usage %
 - PSI memory pressure (`/proc/pressure/memory`)
-- OOM-kill events from kernel log over the window
+- OOM-kill events from kernel log
 - Low-memory and page-allocation warnings
 - Swap in/out event counts
 - Top 10 processes by RSS (current snapshot)

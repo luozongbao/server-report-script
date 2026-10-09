@@ -1,6 +1,8 @@
 #!/bin/bash
 # Memory & swap report — current state plus OOM / low-memory events from journalctl.
-# Usage: ./memory-report.sh <time-range>   e.g. 45m, 12h, 3d, 2w, 1M
+# Usage: ./memory-report.sh [<time-range>]   e.g. 45m, 12h, 3d, 2w, 1M
+#   Time range is optional — current-state sections (1, 1b, 5) don't need one.
+#   When omitted, kernel-log sections (2, 3, 4, 6) scan the full kernel ring buffer.
 
 # Resolve script directory up front so we can locate lib/common.sh below.
 # Use BASH_SOURCE so this works whether the script is invoked as
@@ -65,19 +67,15 @@ require_journalctl
 require_privileges
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-    sed -n '2,4p' "$0"
+    sed -n '2,6p' "$0"
     echo
     email_help
     exit 0
 fi
 
-# Pull email flags out first; whatever remains is the time range.
+# Pull email flags out first; whatever remains is the (optional) time range.
 parse_email_flags "$@"
-if [ "${#REMAINING_ARGS[@]}" -lt 1 ]; then
-    echo "❌ Usage: $0 [--email ADDR]... <time-range>" >&2
-    exit 1
-fi
-TIME_ARG="${REMAINING_ARGS[0]}"
+TIME_ARG="${REMAINING_ARGS[0]:-}"
 
 # If email is requested, capture all stdout to a file (we still tee to TTY).
 if [ "$REPORT_NO_EMAIL" -ne 1 ] && [ -n "$REPORT_RECIPIENTS" ]; then
@@ -88,14 +86,21 @@ else
     REPORT_BODY_FILE="/dev/null"
 fi
 
-SINCE="$(parse_time_arg "$TIME_ARG")"
 TMPFILE_KERNEL="$(mktemp)"
 
-# Pull kernel messages for OOM / low-mem events over the window.
-journalctl --no-pager --since="$SINCE" --output=short-iso -k \
-    > "$TMPFILE_KERNEL" || true
-
-banner_script "Memory report for last $TIME_ARG (since $SINCE)"
+# Pull kernel messages for OOM / low-mem events. Time range is optional —
+# when omitted we scan the full kernel ring buffer (no --since filter).
+if [ -n "$TIME_ARG" ]; then
+    SINCE="$(parse_time_arg "$TIME_ARG")"
+    journalctl --no-pager --since="$SINCE" --output=short-iso -k \
+        > "$TMPFILE_KERNEL" || true
+    banner_script "Memory report for last $TIME_ARG (since $SINCE)"
+else
+    SINCE=""
+    journalctl --no-pager --output=short-iso -k \
+        > "$TMPFILE_KERNEL" || true
+    banner_script "Memory report (no time filter — full kernel ring buffer)"
+fi
 
 # ---- 1. Current memory state ---------------------------------------------
 section "1) Current memory state (/proc/meminfo)"
@@ -184,4 +189,9 @@ grep -iE "oom|memory|swap|allocation failure" "$TMPFILE_KERNEL" \
     | tail -15 || true
 
 printf "\n${C_BOLD}Reporting completed.${C_RESET}\n"
-send_email_if_requested "Server memory report — last $TIME_ARG ($(hostname 2>/dev/null || echo server))"
+if [ -n "$TIME_ARG" ]; then
+    EMAIL_SUBJECT="Server memory report — last $TIME_ARG ($(hostname 2>/dev/null || echo server))"
+else
+    EMAIL_SUBJECT="Server memory report ($(hostname 2>/dev/null || echo server))"
+fi
+send_email_if_requested "$EMAIL_SUBJECT"
